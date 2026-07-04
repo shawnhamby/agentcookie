@@ -142,12 +142,25 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	defer browserCancel()
 
+	// Establish the browser-level CDP connection once, then drive all cookie
+	// injection through the browser executor + the shutdown-scoped ctx (never
+	// browserCtx). A CDP connector (agent-browser/browser-use) closes the pages
+	// browserCtx is bound to, which cancels browserCtx; the browser-level
+	// connection is owned by the allocator and survives, so injection keeps
+	// working across connector churn. (Fixes: the poll loop used to die with
+	// "list targets: context canceled" once a connector attached, so the
+	// connector's own context never got cookies -- the agent woke up logged out.)
+	if err := chromedp.Run(browserCtx); err != nil {
+		return fmt.Errorf("agent-sync: establish browser connection: %w", err)
+	}
+	browser := chromedp.FromContext(browserCtx).Browser
+
 	syncLog := func(format string, a ...any) {
 		if agentSyncVerbose {
 			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: "+format+"\n", a...)
 		}
 	}
-	syncer := livecdp.NewSyncer(browserCtx, provider, syncLog)
+	syncer := livecdp.NewSyncer(ctx, browser, provider, syncLog)
 
 	// Initial inject so the owned browser's default context is logged in
 	// immediately; also surfaces connection/cookie errors at startup.

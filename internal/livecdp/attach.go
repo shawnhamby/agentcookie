@@ -36,30 +36,39 @@ type CookieProvider func() ([]chrome.Cookie, error)
 // (ReinjectAll, used by the source-change watch loop).
 //
 // Injection uses Storage.setCookies addressed by browserContextId via the
-// browser session -- it writes straight into a context's cookie store
-// without attaching to or disturbing any tab the agent is driving.
+// BROWSER-LEVEL executor (browser) and a stable, shutdown-scoped context
+// (ctx) -- never a page-target-bound chromedp context. This is deliberate: a
+// CDP connector attaching (agent-browser/browser-use) closes the pages a
+// page-context is bound to, which cancels that context; a loop driven off it
+// would then fail every Target.getTargets with "context canceled" forever and
+// never inject the connector's own context. The browser-level connection is
+// owned by the allocator and survives page-target churn, so injection keeps
+// working through connect/disconnect cycles.
 type Syncer struct {
-	browserCtx context.Context
-	provider   CookieProvider
-	pollEvery  time.Duration
-	log        func(format string, args ...any)
+	ctx      context.Context
+	browser  cdp.Executor
+	provider CookieProvider
+	pollEvery time.Duration
+	log       func(format string, args ...any)
 
 	mu   sync.Mutex
 	seen map[cdp.BrowserContextID]bool
 }
 
-// NewSyncer builds a Syncer bound to an already-connected chromedp browser
-// context. log may be nil.
-func NewSyncer(browserCtx context.Context, provider CookieProvider, log func(string, ...any)) *Syncer {
+// NewSyncer builds a Syncer that injects via the browser-level executor and a
+// stable, shutdown-scoped context (both survive page-target churn from a CDP
+// connector). log may be nil.
+func NewSyncer(ctx context.Context, browser cdp.Executor, provider CookieProvider, log func(string, ...any)) *Syncer {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
 	return &Syncer{
-		browserCtx: browserCtx,
-		provider:   provider,
-		pollEvery:  DefaultPollInterval,
-		log:        log,
-		seen:       map[cdp.BrowserContextID]bool{},
+		ctx:       ctx,
+		browser:   browser,
+		provider:  provider,
+		pollEvery: DefaultPollInterval,
+		log:       log,
+		seen:      map[cdp.BrowserContextID]bool{},
 	}
 }
 
@@ -93,12 +102,12 @@ func (s *Syncer) ReinjectAll() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("livecdp: provider: %w", err)
 	}
-	return InjectAllContexts(s.browserCtx, cookies)
+	return injectAll(s.ctx, s.browser, cookies)
 }
 
 // syncNewContexts injects only into browser contexts not yet seen.
 func (s *Syncer) syncNewContexts() (int, error) {
-	ids, explicit, err := injectableContexts(s.browserCtx)
+	ids, explicit, err := injectableContexts(s.ctx, s.browser)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +128,7 @@ func (s *Syncer) syncNewContexts() (int, error) {
 			}
 			loaded = true
 		}
-		if err := injectIntoContext(s.browserCtx, id, explicit[id], cookies); err != nil {
+		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], cookies); err != nil {
 			s.log("livecdp: inject context %q: %v", id, err)
 			continue
 		}
@@ -132,19 +141,29 @@ func (s *Syncer) syncNewContexts() (int, error) {
 }
 
 // InjectAllContexts injects cookies into every injectable browser context in
-// the connected browser, once per unique BrowserContextID. Because
+// the connected browser, once per unique BrowserContextID. It accepts a
+// chromedp browser context and drives the injection through that context's
+// browser-level executor; used by one-shot callers and the live tests. The
+// long-running Syncer uses the browser executor + a stable context directly
+// (see injectAll) so it survives page-target churn.
+func InjectAllContexts(browserCtx context.Context, cookies []chrome.Cookie) (int, error) {
+	return injectAll(browserCtx, chromedp.FromContext(browserCtx).Browser, cookies)
+}
+
+// injectAll injects cookies into every injectable browser context reachable
+// via the browser executor, once per unique BrowserContextID. Because
 // Storage.setCookies is addressed by browserContextId, this reaches contexts
 // a connector created for itself -- the fix for the isolated-context failure
 // where a browser-level write never reached the agent's pages.
-func InjectAllContexts(browserCtx context.Context, cookies []chrome.Cookie) (int, error) {
-	ids, explicit, err := injectableContexts(browserCtx)
+func injectAll(ctx context.Context, browser cdp.Executor, cookies []chrome.Cookie) (int, error) {
+	ids, explicit, err := injectableContexts(ctx, browser)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	var firstErr error
 	for _, id := range ids {
-		if err := injectIntoContext(browserCtx, id, explicit[id], cookies); err != nil {
+		if err := injectIntoContext(ctx, browser, id, explicit[id], cookies); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -161,12 +180,12 @@ func InjectAllContexts(browserCtx context.Context, cookies []chrome.Cookie) (int
 // context). Explicit contexts must be addressed by browserContextId in
 // Storage.setCookies; the default context is NOT addressable by id (Chrome
 // rejects its id with -32602) and must be set with the param omitted.
-func injectableContexts(browserCtx context.Context) ([]cdp.BrowserContextID, map[cdp.BrowserContextID]bool, error) {
-	infos, err := chromedp.Targets(browserCtx)
+func injectableContexts(ctx context.Context, browser cdp.Executor) ([]cdp.BrowserContextID, map[cdp.BrowserContextID]bool, error) {
+	infos, err := target.GetTargets().Do(cdp.WithExecutor(ctx, browser))
 	if err != nil {
 		return nil, nil, fmt.Errorf("livecdp: list targets: %w", err)
 	}
-	explicit, err := explicitContextSet(browserCtx)
+	explicit, err := explicitContextSet(ctx, browser)
 	if err != nil {
 		// Degrade gracefully: treat all as default (omit the id). Worst
 		// case an explicit context misses; logged by the caller.
@@ -186,14 +205,8 @@ func injectableContexts(browserCtx context.Context) ([]cdp.BrowserContextID, map
 
 // explicitContextSet returns the browser contexts created via
 // Target.createBrowserContext (the default context is not included).
-func explicitContextSet(browserCtx context.Context) (map[cdp.BrowserContextID]bool, error) {
-	var ids []cdp.BrowserContextID
-	err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		bctx := cdp.WithExecutor(ctx, chromedp.FromContext(ctx).Browser)
-		got, _, e := target.GetBrowserContexts().Do(bctx)
-		ids = got
-		return e
-	}))
+func explicitContextSet(ctx context.Context, browser cdp.Executor) (map[cdp.BrowserContextID]bool, error) {
+	ids, _, err := target.GetBrowserContexts().Do(cdp.WithExecutor(ctx, browser))
 	if err != nil {
 		return nil, err
 	}
@@ -205,27 +218,24 @@ func explicitContextSet(browserCtx context.Context) (map[cdp.BrowserContextID]bo
 }
 
 // injectIntoContext writes cookies into one browser context's cookie store
-// via Storage.setCookies on the browser session. useID controls whether the
+// via Storage.setCookies on the browser executor. useID controls whether the
 // browserContextId param is sent: true for an explicit (createBrowserContext)
 // context, false for the default context (which Chrome rejects when addressed
 // by id). This never attaches to a page target, so it cannot close or disturb
 // a tab the agent is driving.
-func injectIntoContext(browserCtx context.Context, ctxID cdp.BrowserContextID, useID bool, cookies []chrome.Cookie) error {
+func injectIntoContext(ctx context.Context, browser cdp.Executor, ctxID cdp.BrowserContextID, useID bool, cookies []chrome.Cookie) error {
 	params := BuildCookieParams(cookies)
 	if len(params) == 0 {
 		return nil
 	}
-	return chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		bctx := cdp.WithExecutor(ctx, chromedp.FromContext(ctx).Browser)
-		sc := storage.SetCookies(params)
-		if useID {
-			sc = sc.WithBrowserContextID(ctxID)
-		}
-		if err := sc.Do(bctx); err != nil {
-			return fmt.Errorf("Storage.setCookies (%d cookies, ctx=%q useID=%v): %w", len(params), ctxID, useID, err)
-		}
-		return nil
-	}))
+	sc := storage.SetCookies(params)
+	if useID {
+		sc = sc.WithBrowserContextID(ctxID)
+	}
+	if err := sc.Do(cdp.WithExecutor(ctx, browser)); err != nil {
+		return fmt.Errorf("Storage.setCookies (%d cookies, ctx=%q useID=%v): %w", len(params), ctxID, useID, err)
+	}
+	return nil
 }
 
 // shouldInjectTarget reports whether a target should receive cookies: real
