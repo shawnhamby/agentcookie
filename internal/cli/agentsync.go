@@ -28,6 +28,8 @@ var (
 	agentSyncDomains     []string
 	agentSyncBrowser     string
 	agentSyncVerbose     bool
+	agentSyncUserAgent   string
+	agentSyncWindowSize  string
 )
 
 var agentSyncCmd = &cobra.Command{
@@ -67,6 +69,8 @@ func init() {
 	agentSyncCmd.Flags().StringSliceVar(&agentSyncDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com")
 	agentSyncCmd.Flags().StringVar(&agentSyncBrowser, "browser", "", "source browser name (default: source.yaml browser, then Chrome)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
+	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
+	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; default: Chrome's 800x600 headless)")
 }
 
 func runAgentSync(cmd *cobra.Command, args []string) error {
@@ -131,7 +135,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded)
+	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded, agentSyncUserAgent, agentSyncWindowSize)
 	if err != nil {
 		return err
 	}
