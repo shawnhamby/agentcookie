@@ -2,12 +2,31 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
 )
+
+// resolveSourceDBPath returns the cookie DB path for the effective source
+// browser. cfg.Chrome.DBPath is derived from source.yaml's browser+profile at
+// config load, so a flag override that changes the browser (or an explicit
+// profile) must re-derive the path; otherwise the flag browser's Keychain key
+// would be applied to the configured browser's store and decryption would
+// fail wholesale. Profile names are browser-local, so a browser switch with
+// no explicit profile lands on the target browser's default profile.
+func resolveSourceDBPath(cfg *config.SourceConfig, flagBrowser, flagProfile, effectiveBrowser string) (string, error) {
+	if (flagBrowser == "" || strings.EqualFold(flagBrowser, cfg.Browser.Name)) && flagProfile == "" {
+		return cfg.Chrome.DBPath, nil
+	}
+	dbPath, err := config.SourceBrowserCookiesPath(effectiveBrowser, flagProfile)
+	if err != nil {
+		return "", fmt.Errorf("resolve cookie store for --browser %s: %w", effectiveBrowser, err)
+	}
+	return dbPath, nil
+}
 
 // readStats summarizes one read+filter pass for logging by the caller.
 type readStats struct {

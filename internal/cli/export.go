@@ -88,7 +88,11 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	skipDBSC := exportSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 
-	cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+	dbPath, err := resolveSourceDBPath(cfg, exportBrowser, "", browserName)
+	if err != nil {
+		return err
+	}
+	cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
 	if err != nil {
 		return err
 	}
