@@ -167,6 +167,35 @@ func TestWriteCookiesSidecar_ParentDirCreated(t *testing.T) {
 	}
 }
 
+func TestWriteCookiesSidecar_TightensExistingParentDir(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "cookies.db")
+	if _, err := WriteCookiesSidecar(target, []Cookie{{HostKey: "x.com", Name: "n", Value: "secret"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parentInfo.Mode().Perm() != 0o700 {
+		t.Errorf("existing parent mode: got %o, want 0700", parentInfo.Mode().Perm())
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetInfo.Mode().Perm() != 0o600 {
+		t.Errorf("sidecar mode: got %o, want 0600", targetInfo.Mode().Perm())
+	}
+}
+
 func TestWriteCookiesSidecar_EmptyValuesAllowed(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "cookies.db")
 	cookies := []Cookie{

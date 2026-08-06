@@ -59,6 +59,13 @@ designated => identifier "com.mvanhorn.agentcookie" and anchor apple generic and
 			if tc.wantSubs != "" && !strings.Contains(c.Detail, tc.wantSubs) {
 				t.Errorf("detail missing %q: %q", tc.wantSubs, c.Detail)
 			}
+			if tc.wantSev == SeverityWarn {
+				for _, want := range []string{"AGENTCOOKIE_SIGN_IDENTITY", "DEFAULT_SIGN_IDENTITY"} {
+					if !strings.Contains(c.Remediation, want) {
+						t.Errorf("remediation missing canonical signing mapping %q: %q", want, c.Remediation)
+					}
+				}
+			}
 		})
 	}
 }

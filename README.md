@@ -151,6 +151,8 @@ cmux is WebKit. The Chromium agent browsers used for automation and HAR sniffing
 agentcookie agent-sync                          # launch + sync, hold until Ctrl-C
 agentcookie agent-sync --headed                 # show the owned browser window
 agentcookie agent-sync --domain "%github.com"   # limit to matching hosts
+agentcookie agent-sync --require-policy=allowlist # fail closed unless allowlist mode stays active
+agentcookie agent-sync --capabilities-json      # inspect flags/defaults/policy/build/signing contract
 ```
 
 It prints the connect commands for the running browser:
@@ -220,6 +222,11 @@ sync; an empty allowlist syncs no cookie hosts. `agentcookie status` and
 `agentcookie doctor` report the active cookie policy, and `accounts on/off`
 remain blocklist-only helpers.
 
+For unattended `agent-sync` launches, `--require-policy=allowlist` checks the
+policy before Chrome starts and again on every cookie reload. Removing or
+downgrading `blocklist.yaml` then fails the cycle instead of reverting to
+sync-all.
+
 Healthy output:
 
 ```
@@ -252,7 +259,7 @@ Working:
 - Apple Developer ID signed binaries; the sink daemon reads Chrome Safe Storage via the `teamid:` partition (no per-binary trust list, no recreate of the key value).
 - Headless second-Mac install over SSH: one login-password entry, no GUI SecurityAgent click. A box with no password available installs in degraded mode (sidecar + adapters still work) and prints the one-line upgrade command.
 - `agentcookie doctor` runs fifteen health categories including cookie delivery (universal vs degraded, with duplicate-keychain-item race detection), binary signature + install, Tailscale, config, keystore, listener bind, sink/source state, sealing posture, adapter coverage, CDP injector health, secrets-bus + secret coverage, and DBSC-suspect cookies.
-- 520+ unit tests across 26 packages.
+- 800+ unit tests across the Go packages.
 
 Not yet:
 
@@ -284,7 +291,7 @@ In short: DBSC narrows one corner of the web (today, mostly Google) and agentcoo
 |---|---|
 | [Quickstart](docs/quickstart.md) | install on a laptop + second-Mac pair |
 | [Architecture](docs/architecture.md) | module layout, sync lifecycle, security boundaries |
-| [Protocol v1](docs/protocol.md) | wire format spec for future client implementations |
+| [Protocol v2](docs/protocol.md) | wire format spec for future client implementations |
 | [Threat model](docs/threat-model.md) | what agentcookie does and does not protect against |
 | [FAQ](docs/faq.md) | common questions |
 | [Headless quickstart](docs/quickstart-beta.md) | SSH-only install on a headless second Mac |

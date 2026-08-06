@@ -1,4 +1,4 @@
-# agentcookie protocol v1
+# agentcookie protocol v2
 
 This document captures the wire format between source and sink so future clients (a Linux sink, a Chrome extension on the sink, a hosted relay) can interoperate.
 
@@ -12,7 +12,7 @@ This document captures the wire format between source and sink so future clients
 
 ```
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "source_hostname": "my-laptop.tailnet.ts.net",
   "sequence": 1747432817,
   "cookies": [ { ... }, { ... } ]
@@ -21,7 +21,7 @@ This document captures the wire format between source and sink so future clients
 
 Field-by-field:
 
-- `protocol_version` (int, required). Sinks reject envelopes whose value does not equal the sink's compiled-in version. Bumping the version is a breaking change.
+- `protocol_version` (int, required). Sources emit v2. Sinks accept v1 through v2; v1 envelopes carry cookies only, while v2 can also carry LocalStorage and IndexedDB payloads.
 - `source_hostname` (string, required). The source's announced hostname. The sink uses this as the key in its replay-defense bookkeeping. The same hostname appears in the paired key file under `~/.config/agentcookie/keys/`.
 - `sequence` (int64, required). Monotonically increasing per source. Sinks reject an envelope whose `sequence` is less than or equal to the highest sequence seen for that source since process start. The source uses `time.Now().Unix()` by default; any monotonically increasing source is acceptable.
 - `cookies` (array, required). Each cookie matches the `chrome.Cookie` Go struct: `host_key`, `name`, `value` (plaintext after source-side decrypt), `path`, `expires_utc`, `is_secure`, `is_httponly`, `last_access_utc`, `has_expires`, `is_persistent`, `priority`, `samesite`, `source_scheme`, `source_port`. Values are integers and strings, never raw bytes.
@@ -30,7 +30,7 @@ Field-by-field:
 
 1. Decrypt the body with the configured shared/paired key. Reject `401 Unauthorized` on failure.
 2. JSON-unmarshal the envelope. Reject `400 Bad Request` on failure.
-3. Check `protocol_version == 1`. Reject `400` with a clear message otherwise.
+3. Check that `protocol_version` is in the supported v1-v2 range. Reject `400` with a clear message otherwise.
 4. Check `sequence` against the in-memory tracker for `source_hostname`. Reject `409 Conflict` if not strictly greater than the last seen value.
 5. Filter `cookies` against the sink's local cookie policy in `blocklist.yaml`. In blocklist mode, matching hosts are dropped. In allowlist mode, only matching hosts are kept. The sink logs dropped host counts and reports them to the source via the response body.
 6. Write the remaining cookies. CDP path first if `cdp.enabled` and Chrome reachable; otherwise SQLite path.
@@ -81,6 +81,7 @@ A missing `blocklist.yaml` still means sync-all; a present but unparseable polic
 
 ## Versioning
 
-- v1 is the current wire format. Source and sink must both speak it.
+- v2 is the current wire format. It added optional LocalStorage and IndexedDB payloads alongside cookies.
+- v1 remains accepted for cookie-only envelopes.
 - Future versions: bump `protocol_version` and update both source and sink. Sinks may carry compatibility shims for one prior version during transition windows.
-- Out-of-band fields (e.g. filter sync, signed bundles, cookie diffs) will arrive as additional optional envelope fields under v1 first, then potentially graduate to required in v2.
+- Out-of-band fields (e.g. filter sync, signed bundles, cookie diffs) may arrive as additional optional envelope fields under v2 before a future breaking version.

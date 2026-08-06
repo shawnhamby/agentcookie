@@ -2,15 +2,19 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
 	"github.com/chromedp/chromedp"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
@@ -23,18 +27,26 @@ import (
 // owned-profile dir name (agent-chrome) for existing consumers.
 const defaultAgentSyncPort = 9400
 
+const (
+	agentSyncCapabilitiesSchemaVersion = 1
+	canonicalSignIdentityEnv           = "AGENTCOOKIE_SIGN_IDENTITY"
+	externalWrapperSignIdentityEnv     = "DEFAULT_SIGN_IDENTITY"
+)
+
 var (
-	agentSyncPort        int
-	agentSyncHeaded      bool
-	agentSyncChromePath  string
-	agentSyncUserDataDir string
-	agentSyncSkipDBSC    bool
-	agentSyncDomains     []string
-	agentSyncBrowser     string
-	agentSyncProfile     string
-	agentSyncVerbose     bool
-	agentSyncUserAgent   string
-	agentSyncWindowSize  string
+	agentSyncPort             int
+	agentSyncHeaded           bool
+	agentSyncChromePath       string
+	agentSyncUserDataDir      string
+	agentSyncSkipDBSC         bool
+	agentSyncDomains          []string
+	agentSyncBrowser          string
+	agentSyncProfile          string
+	agentSyncVerbose          bool
+	agentSyncUserAgent        string
+	agentSyncWindowSize       string
+	agentSyncRequirePolicy    string
+	agentSyncCapabilitiesJSON bool
 )
 
 var agentSyncCmd = &cobra.Command{
@@ -77,6 +89,8 @@ func init() {
 	agentSyncCmd.Flags().BoolVar(&agentSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
 	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
 	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; default: Chrome's 800x600 headless)")
+	agentSyncCmd.Flags().StringVar(&agentSyncRequirePolicy, "require-policy", "", `refuse to start or sync unless this cookie policy is active (supported: "allowlist")`)
+	agentSyncCmd.Flags().BoolVar(&agentSyncCapabilitiesJSON, "capabilities-json", false, "print the agent-sync capability contract as JSON and exit")
 }
 
 func runAgentSync(cmd *cobra.Command, args []string) error {
@@ -87,7 +101,15 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadFreshBlocklist(); err != nil {
+	blocklist, err := loadFreshBlocklist()
+	if err != nil {
+		return err
+	}
+	if agentSyncCapabilitiesJSON {
+		return writeAgentSyncCapabilities(cmd.OutOrStdout(), cmd, cfg, blocklist)
+	}
+	requiredPolicy := agentSyncRequirePolicy
+	if err := enforceAgentSyncPolicy(blocklist, requiredPolicy); err != nil {
 		return err
 	}
 
@@ -117,22 +139,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 
 	// Cookie provider: read+decrypt+filter fresh each call so the loop always
 	// injects current values.
-	provider := func() ([]chrome.Cookie, error) {
-		blocklist, err := loadFreshBlocklist()
-		if err != nil {
-			return nil, err
-		}
-		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
-		if err != nil {
-			return nil, err
-		}
-		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
-		if agentSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
-				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
-		}
-		return cookies, nil
-	}
+	provider := newAgentSyncCookieProvider(dbPath, key, skipDBSC, domainFilter, requiredPolicy)
 
 	userDataDir := agentSyncUserDataDir
 	if userDataDir == "" {
@@ -230,4 +237,96 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "agentcookie agent-sync: stopped")
 	return nil
+}
+
+func newAgentSyncCookieProvider(dbPath string, key []byte, skipDBSC bool, domainFilter []string, requiredPolicy string) livecdp.CookieProvider {
+	return func() ([]chrome.Cookie, error) {
+		blocklist, err := loadRequiredAgentSyncPolicy(requiredPolicy)
+		if err != nil {
+			return nil, err
+		}
+		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
+		if agentSyncVerbose {
+			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
+				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
+		}
+		return cookies, nil
+	}
+}
+
+type agentSyncSigningSummary struct {
+	CanonicalIdentityEnv   string                         `json:"canonical_identity_env"`
+	ExternalWrapperMapping agentSyncSigningWrapperMapping `json:"external_wrapper_mapping"`
+}
+
+type agentSyncSigningWrapperMapping struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type agentSyncCapabilities struct {
+	SchemaVersion           int                     `json:"schema_version"`
+	SupportedFlags          []string                `json:"supported_flags"`
+	EffectiveBrowserDefault string                  `json:"effective_browser_default"`
+	PolicyMode              string                  `json:"policy_mode"`
+	BuildVersion            string                  `json:"build_version"`
+	SigningSummary          agentSyncSigningSummary `json:"signing_summary"`
+}
+
+func enforceAgentSyncPolicy(blocklist *config.Blocklist, required string) error {
+	if required == "" {
+		return nil
+	}
+	if required != string(config.CookiePolicyAllowlist) {
+		return fmt.Errorf("unsupported --require-policy value %q (supported: %q)", required, config.CookiePolicyAllowlist)
+	}
+	if blocklist.PolicyMode() != config.CookiePolicyAllowlist {
+		return fmt.Errorf("agent-sync: required cookie policy %q is not active (effective policy: %s)", required, blocklist.CookiePolicySummary())
+	}
+	return nil
+}
+
+func loadRequiredAgentSyncPolicy(required string) (*config.Blocklist, error) {
+	blocklist, err := loadFreshBlocklist()
+	if err != nil {
+		return nil, err
+	}
+	if err := enforceAgentSyncPolicy(blocklist, required); err != nil {
+		return nil, err
+	}
+	return blocklist, nil
+}
+
+func writeAgentSyncCapabilities(w io.Writer, cmd *cobra.Command, cfg *config.SourceConfig, blocklist *config.Blocklist) error {
+	browser, err := chrome.LookupBrowser(cfg.Browser.Name)
+	if err != nil {
+		return err
+	}
+	flags := make([]string, 0, cmd.Flags().NFlag())
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		flags = append(flags, "--"+flag.Name)
+	})
+	sort.Strings(flags)
+
+	report := agentSyncCapabilities{
+		SchemaVersion:           agentSyncCapabilitiesSchemaVersion,
+		SupportedFlags:          flags,
+		EffectiveBrowserDefault: browser.Name,
+		PolicyMode:              blocklist.CookiePolicySummary(),
+		BuildVersion:            Version,
+		SigningSummary: agentSyncSigningSummary{
+			CanonicalIdentityEnv: canonicalSignIdentityEnv,
+			ExternalWrapperMapping: agentSyncSigningWrapperMapping{
+				From: externalWrapperSignIdentityEnv,
+				To:   canonicalSignIdentityEnv,
+			},
+		},
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
 }
