@@ -56,13 +56,27 @@ func ReadCookiesForHost(dbPath, hostPattern string, key []byte) ([]Cookie, error
 	}
 	defer db.Close()
 
-	query := `
+	cols, err := readTableColumns(db, "cookies")
+	if err != nil {
+		return nil, fmt.Errorf("read cookies schema: %w", err)
+	}
+	topFrameSiteKeyExpr := "''"
+	if cols["top_frame_site_key"] {
+		topFrameSiteKeyExpr = "top_frame_site_key"
+	}
+	hasCrossSiteAncestorExpr := "0"
+	if cols["has_cross_site_ancestor"] {
+		hasCrossSiteAncestorExpr = "has_cross_site_ancestor"
+	}
+
+	query := fmt.Sprintf(`
 SELECT host_key, name, encrypted_value, path,
        expires_utc, is_secure, is_httponly, last_access_utc,
        has_expires, is_persistent, priority, samesite,
-       source_scheme, source_port, top_frame_site_key, has_cross_site_ancestor
+       source_scheme, source_port, %s AS top_frame_site_key,
+       %s AS has_cross_site_ancestor
 FROM cookies
-WHERE host_key LIKE ?`
+WHERE host_key LIKE ?`, topFrameSiteKeyExpr, hasCrossSiteAncestorExpr)
 	rows, err := db.Query(query, hostPattern)
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)

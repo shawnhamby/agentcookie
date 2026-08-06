@@ -170,7 +170,7 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 	candidates := []field{
 		{"creation_utc", func(r rowInput) any { return r.creationUTC }},
 		{"host_key", func(r rowInput) any { return r.cookie.HostKey }},
-		{"top_frame_site_key", func(r rowInput) any { return "" }},
+		{"top_frame_site_key", func(r rowInput) any { return r.cookie.TopFrameSiteKey }},
 		{"name", func(r rowInput) any { return r.cookie.Name }},
 		{"value", func(r rowInput) any { return "" }},
 		{"encrypted_value", func(r rowInput) any { return r.encrypted }},
@@ -187,7 +187,7 @@ func buildUpsert(cols map[string]bool) (string, func(rowInput) []any) {
 		{"source_port", func(r rowInput) any { return r.cookie.SourcePort }},
 		{"last_update_utc", func(r rowInput) any { return r.lastUpdateUTC }},
 		{"source_type", func(r rowInput) any { return 0 }},
-		{"has_cross_site_ancestor", func(r rowInput) any { return 1 }},
+		{"has_cross_site_ancestor", func(r rowInput) any { return r.cookie.HasCrossSiteAncestor }},
 	}
 
 	var present []field

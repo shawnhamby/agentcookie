@@ -63,3 +63,54 @@ func TestReadCookiesForHost_UnpartitionedLeavesKeyEmpty(t *testing.T) {
 		t.Errorf("TopFrameSiteKey: got %q, want empty", got[0].TopFrameSiteKey)
 	}
 }
+
+func TestReadCookiesForHost_LegacySchemaWithoutCrossSiteAncestor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Cookies")
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+CREATE TABLE cookies(
+	host_key TEXT NOT NULL,
+	top_frame_site_key TEXT NOT NULL,
+	name TEXT NOT NULL,
+	encrypted_value BLOB NOT NULL,
+	path TEXT NOT NULL,
+	expires_utc INTEGER NOT NULL,
+	is_secure INTEGER NOT NULL,
+	is_httponly INTEGER NOT NULL,
+	last_access_utc INTEGER NOT NULL,
+	has_expires INTEGER NOT NULL,
+	is_persistent INTEGER NOT NULL,
+	priority INTEGER NOT NULL,
+	samesite INTEGER NOT NULL,
+	source_scheme INTEGER NOT NULL,
+	source_port INTEGER NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	enc, err := encryptValueBytes([]byte("legacy-value"), testKey)
+	if err != nil {
+		t.Fatalf("encryptValueBytes: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO cookies VALUES (?, ?, ?, ?, '/', 0, 1, 0, 0, 0, 0, 1, 0, 2, 443)`,
+		".example.com", "https://top-level.example", "legacy", enc); err != nil {
+		t.Fatalf("insert legacy cookie: %v", err)
+	}
+
+	got, err := ReadCookiesForHost(path, "%example.com", testKey)
+	if err != nil {
+		t.Fatalf("ReadCookiesForHost: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d cookies, want 1", len(got))
+	}
+	if got[0].TopFrameSiteKey != "https://top-level.example" {
+		t.Errorf("TopFrameSiteKey: got %q, want %q", got[0].TopFrameSiteKey, "https://top-level.example")
+	}
+	if got[0].HasCrossSiteAncestor != 0 {
+		t.Errorf("HasCrossSiteAncestor: got %d, want zero-value fallback", got[0].HasCrossSiteAncestor)
+	}
+}
