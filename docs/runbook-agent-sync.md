@@ -51,7 +51,16 @@ agentcookie agent-sync --headed                 # show the owned browser window
 agentcookie agent-sync --domain "%github.com"   # limit to matching hosts
 agentcookie agent-sync --port 9400              # debug port (default 9400)
 agentcookie agent-sync --verbose                # per-cycle counts
+agentcookie agent-sync --require-policy=allowlist # fail closed unless allowlist mode stays active
+agentcookie agent-sync --capabilities-json      # machine-readable launch contract, then exit
 ```
+
+`--require-policy=allowlist` is intended for unattended high-trust launches.
+It verifies the policy before Chrome starts and on every cookie reload, so a
+missing or downgraded `blocklist.yaml` cannot silently restore sync-all.
+`--capabilities-json` reports schema version 1, supported flags, the effective
+browser default, current policy mode, build version, and the signing-variable
+contract without launching Chrome or reading the Keychain.
 
 It prints the connect commands:
 

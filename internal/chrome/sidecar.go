@@ -82,11 +82,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS cookies_unique_index ON cookies(
 //
 // Returns the number of cookies written.
 func WriteCookiesSidecar(targetPath string, cookies []Cookie, masterKey []byte) (int, error) {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+	parentDir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(parentDir, 0o700); err != nil {
 		return 0, fmt.Errorf("mkdir sidecar parent: %w", err)
+	}
+	if err := os.Chmod(parentDir, 0o700); err != nil {
+		return 0, fmt.Errorf("chmod sidecar parent: %w", err)
 	}
 	tmpPath := targetPath + ".agentcookie.tmp"
 	_ = os.Remove(tmpPath)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("create sidecar tmp: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("close sidecar tmp: %w", err)
+	}
 
 	db, err := sql.Open("sqlite3", "file:"+tmpPath+"?_journal=WAL")
 	if err != nil {
@@ -158,10 +170,6 @@ func WriteCookiesSidecar(targetPath string, cookies []Cookie, masterKey []byte) 
 	if err := db.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return written, fmt.Errorf("close sidecar db: %w", err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return written, fmt.Errorf("chmod sidecar: %w", err)
 	}
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		_ = os.Remove(tmpPath)

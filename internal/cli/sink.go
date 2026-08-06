@@ -27,7 +27,8 @@ import (
 )
 
 var (
-	sinkDryRun bool
+	sinkDryRun       bool
+	sinkDryRunValues bool
 )
 
 var sinkCmd = &cobra.Command{
@@ -43,18 +44,23 @@ Chrome must be quit on the sink while writes happen (file lock). Live
 injection via CDP, which lifts that requirement, lands in U4.
 
 --dry-run skips the Chrome Safe Storage / SQLite / CDP write paths entirely
-and dumps each accepted batch of cookies to stderr as JSON. Useful for
-debugging the wire format and for running the sink over SSH without the
-GUI Keychain prompt that 'security find-generic-password' otherwise
-requires on macOS.`,
+and dumps redacted cookie metadata to stderr as JSON. Use --dry-run-values
+only when plaintext values are intentionally needed for debugging. Dry-run
+mode also avoids the GUI Keychain prompt that
+'security find-generic-password' otherwise requires on macOS.`,
 	RunE: runSink,
 }
 
 func init() {
-	sinkCmd.Flags().BoolVar(&sinkDryRun, "dry-run", false, "accept and decrypt sync payloads but do NOT touch Chrome Safe Storage or write any cookies; dump batches to stderr")
+	sinkCmd.Flags().BoolVar(&sinkDryRun, "dry-run", false, "accept and decrypt sync payloads but do NOT touch Chrome Safe Storage or write any cookies; dump redacted batches to stderr")
+	sinkCmd.Flags().BoolVar(&sinkDryRunValues, "dry-run-values", false, "include plaintext cookie values in --dry-run output (sensitive)")
 }
 
 func runSink(cmd *cobra.Command, args []string) error {
+	if sinkDryRunValues && !sinkDryRun {
+		return fmt.Errorf("--dry-run-values requires --dry-run")
+	}
+
 	cfg, err := config.LoadSink(common.ConfigDir)
 	if err != nil {
 		return err
@@ -217,15 +223,14 @@ func newSinkMux(
 		}
 
 		if sinkDryRun {
-			// Dump the accepted batch to stderr as JSON for inspection. Do NOT
-			// touch Chrome state.
-			dump, _ := json.MarshalIndent(map[string]any{
-				"source_hostname": envelope.SourceHostname,
-				"sequence":        envelope.Sequence,
-				"accepted":        len(cookies),
-				"dropped":         dropped,
-				"cookies":         cookies,
-			}, "", "  ")
+			// Dump the accepted batch to stderr for inspection without exposing
+			// cookie values unless the operator explicitly opted in.
+			dump, err := marshalSinkDryRunBatch(&envelope, cookies, dropped, sinkDryRunValues)
+			if err != nil {
+				recordSinkReject(sinkState, stateWriter, err)
+				http.Error(w, "marshal dry-run batch: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			fmt.Fprintf(os.Stderr, "agentcookie sink (dry-run): accepted batch:\n%s\n", string(dump))
 			sinkState.LastWrite = time.Now().UTC()
 			sinkState.LastWriteCount = len(cookies)
@@ -326,6 +331,45 @@ func newSinkMux(
 		_, _ = fmt.Fprintf(w, "ok: wrote %d cookies (%d sidecar), %d localStorage origins, %d indexedDB origins; dropped %d %s cookies\n", result.Cookies, result.SidecarCookies, result.LocalStorage, result.IndexedDB, dropped, blockMatcher.DropLabel())
 	})
 	return mux
+}
+
+type sinkDryRunCookieMetadata struct {
+	Name         string `json:"name"`
+	Domain       string `json:"domain"`
+	Path         string `json:"path"`
+	ExpiresUTC   int64  `json:"expires_utc"`
+	Secure       bool   `json:"secure"`
+	HTTPOnly     bool   `json:"http_only"`
+	HasExpires   bool   `json:"has_expires"`
+	IsPersistent bool   `json:"persistent"`
+}
+
+func marshalSinkDryRunBatch(envelope *protocol.SyncEnvelope, cookies []chrome.Cookie, dropped int, includeValues bool) ([]byte, error) {
+	var outputCookies any = cookies
+	if !includeValues {
+		metadata := make([]sinkDryRunCookieMetadata, 0, len(cookies))
+		for _, cookie := range cookies {
+			metadata = append(metadata, sinkDryRunCookieMetadata{
+				Name:         cookie.Name,
+				Domain:       cookie.HostKey,
+				Path:         cookie.Path,
+				ExpiresUTC:   cookie.ExpiresUTC,
+				Secure:       cookie.IsSecure != 0,
+				HTTPOnly:     cookie.IsHTTPOnly != 0,
+				HasExpires:   cookie.HasExpires != 0,
+				IsPersistent: cookie.IsPersistent != 0,
+			})
+		}
+		outputCookies = metadata
+	}
+
+	return json.MarshalIndent(map[string]any{
+		"source_hostname": envelope.SourceHostname,
+		"sequence":        envelope.Sequence,
+		"accepted":        len(cookies),
+		"dropped":         dropped,
+		"cookies":         outputCookies,
+	}, "", "  ")
 }
 
 func recordSinkReject(sinkState *state.SinkState, stateWriter *state.Writer, err error) {

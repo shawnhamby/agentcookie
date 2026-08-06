@@ -353,6 +353,61 @@ domains:
 	}
 }
 
+func TestMarshalSinkDryRunBatchRedactsValuesByDefault(t *testing.T) {
+	envelope := &protocol.SyncEnvelope{SourceHostname: "source-test", Sequence: 42}
+	cookies := []chrome.Cookie{{
+		HostKey:      ".example.com",
+		Name:         "session",
+		Value:        "plaintext-cookie-secret",
+		Path:         "/account",
+		ExpiresUTC:   12345,
+		IsSecure:     1,
+		IsHTTPOnly:   1,
+		HasExpires:   1,
+		IsPersistent: 1,
+	}}
+
+	dump, err := marshalSinkDryRunBatch(envelope, cookies, 3, false)
+	if err != nil {
+		t.Fatalf("marshalSinkDryRunBatch: %v", err)
+	}
+	text := string(dump)
+	if strings.Contains(text, "plaintext-cookie-secret") || strings.Contains(text, `"value"`) {
+		t.Fatalf("default dry-run output exposed a cookie value: %s", text)
+	}
+	for _, want := range []string{`"domain": ".example.com"`, `"name": "session"`, `"path": "/account"`, `"expires_utc": 12345`, `"secure": true`, `"http_only": true`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("redacted dry-run output missing %s: %s", want, text)
+		}
+	}
+}
+
+func TestMarshalSinkDryRunBatchValuesRequireExplicitOptIn(t *testing.T) {
+	envelope := &protocol.SyncEnvelope{SourceHostname: "source-test", Sequence: 42}
+	cookies := []chrome.Cookie{{HostKey: ".example.com", Name: "session", Value: "plaintext-cookie-secret", Path: "/"}}
+
+	dump, err := marshalSinkDryRunBatch(envelope, cookies, 0, true)
+	if err != nil {
+		t.Fatalf("marshalSinkDryRunBatch: %v", err)
+	}
+	if !strings.Contains(string(dump), `"value": "plaintext-cookie-secret"`) {
+		t.Fatalf("opt-in dry-run output omitted cookie value: %s", dump)
+	}
+}
+
+func TestSinkDryRunValuesRequiresDryRun(t *testing.T) {
+	oldDryRun, oldDryRunValues := sinkDryRun, sinkDryRunValues
+	sinkDryRun, sinkDryRunValues = false, true
+	t.Cleanup(func() {
+		sinkDryRun, sinkDryRunValues = oldDryRun, oldDryRunValues
+	})
+
+	err := runSink(sinkCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "--dry-run-values requires --dry-run") {
+		t.Fatalf("runSink error = %v, want dry-run-values guard", err)
+	}
+}
+
 // TestSetCDPInjectorForTesting confirms the test seam restores the
 // production injector. Used by other tests that need to stub
 // cdpInject.

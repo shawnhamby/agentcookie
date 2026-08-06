@@ -9,11 +9,11 @@
 // X25519 shared secret and run HKDF-SHA256 over (shared_secret, salt=code,
 // info="agentcookie-pair-v1") to derive the final 32-byte symmetric key.
 //
-// The pairing code in the HKDF salt is the MITM defense: an attacker who
-// intercepts the TLS-or-not channel without knowing the code gets a
-// different derived key, and the next encrypted message fails its AEAD
-// tag check. Tailscale already gives us a confidential channel; this is
-// defense in depth.
+// The pairing code blocks blind endpoint access and, with rate limiting,
+// resists brute-force pairing attempts. It does not defeat an observer or
+// active MITM because the code itself travels in the plaintext HTTP request.
+// Pairing-channel confidentiality and peer isolation come from the underlying
+// Tailscale/WireGuard channel.
 package pairing
 
 import (
