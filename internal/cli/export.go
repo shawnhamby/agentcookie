@@ -117,14 +117,24 @@ func runExport(cmd *cobra.Command, args []string) error {
 // sameSite, and an optional expirationDate in Unix seconds. Field names and
 // JSON tags match so the output imports with no mapping step on the consumer.
 type exportCookie struct {
-	Domain         string `json:"domain"`
-	Name           string `json:"name"`
-	Value          string `json:"value"`
-	Path           string `json:"path"`
-	Secure         bool   `json:"secure"`
-	HTTPOnly       bool   `json:"httpOnly"`
-	SameSite       string `json:"sameSite"`
-	ExpirationDate *int64 `json:"expirationDate,omitempty"`
+	Domain         string              `json:"domain"`
+	Name           string              `json:"name"`
+	Value          string              `json:"value"`
+	Path           string              `json:"path"`
+	Secure         bool                `json:"secure"`
+	HTTPOnly       bool                `json:"httpOnly"`
+	SameSite       string              `json:"sameSite"`
+	ExpirationDate *int64              `json:"expirationDate,omitempty"`
+	PartitionKey   *exportPartitionKey `json:"partitionKey,omitempty"`
+}
+
+// exportPartitionKey mirrors CDP's network.CookiePartitionKey field names so
+// a CHIPS-partitioned cookie (e.g. Cloudflare's cf_clearance) round-trips
+// through export without a mapping step. Omitted entirely for ordinary,
+// unpartitioned cookies (the common case).
+type exportPartitionKey struct {
+	TopLevelSite         string `json:"topLevelSite"`
+	HasCrossSiteAncestor bool   `json:"hasCrossSiteAncestor"`
 }
 
 // toExportCookies maps decrypted chrome.Cookie rows into the consumer import
@@ -149,6 +159,12 @@ func toExportCookies(cookies []chrome.Cookie) []exportCookie {
 		if c.HasExpires != 0 && c.ExpiresUTC != 0 {
 			exp := c.ExpiresUTC/1_000_000 - exportEpochOffsetSec
 			ec.ExpirationDate = &exp
+		}
+		if c.TopFrameSiteKey != "" {
+			ec.PartitionKey = &exportPartitionKey{
+				TopLevelSite:         c.TopFrameSiteKey,
+				HasCrossSiteAncestor: c.HasCrossSiteAncestor != 0,
+			}
 		}
 		out = append(out, ec)
 	}

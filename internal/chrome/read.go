@@ -29,6 +29,13 @@ type Cookie struct {
 	SameSite      int    `json:"samesite"`
 	SourceScheme  int    `json:"source_scheme"`
 	SourcePort    int    `json:"source_port"`
+	// TopFrameSiteKey is Chrome's CHIPS partition key (the top-level site the
+	// cookie was set under). Empty means an ordinary, unpartitioned cookie.
+	// HasCrossSiteAncestor completes the partition key CDP requires
+	// (network.CookiePartitionKey needs both fields to reproduce Chrome's own
+	// key) and is only meaningful when TopFrameSiteKey is non-empty.
+	TopFrameSiteKey      string `json:"top_frame_site_key"`
+	HasCrossSiteAncestor int    `json:"has_cross_site_ancestor"`
 }
 
 // DefaultCookiesPath returns the default Chrome cookies SQLite path on macOS.
@@ -53,7 +60,7 @@ func ReadCookiesForHost(dbPath, hostPattern string, key []byte) ([]Cookie, error
 SELECT host_key, name, encrypted_value, path,
        expires_utc, is_secure, is_httponly, last_access_utc,
        has_expires, is_persistent, priority, samesite,
-       source_scheme, source_port
+       source_scheme, source_port, top_frame_site_key, has_cross_site_ancestor
 FROM cookies
 WHERE host_key LIKE ?`
 	rows, err := db.Query(query, hostPattern)
@@ -74,7 +81,7 @@ WHERE host_key LIKE ?`
 			&c.HostKey, &c.Name, &encryptedValue, &c.Path,
 			&c.ExpiresUTC, &c.IsSecure, &c.IsHTTPOnly, &c.LastAccessUTC,
 			&c.HasExpires, &c.IsPersistent, &c.Priority, &c.SameSite,
-			&c.SourceScheme, &c.SourcePort,
+			&c.SourceScheme, &c.SourcePort, &c.TopFrameSiteKey, &c.HasCrossSiteAncestor,
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}

@@ -147,6 +147,17 @@ func buildCookieParam(c chrome.Cookie, value string) *network.CookieParam {
 		p.Path = "/"
 	}
 
+	// CHIPS-partitioned cookies (e.g. Cloudflare's cf_clearance) carry a
+	// non-empty top_frame_site_key in Chrome's own store; mirror the same
+	// PartitionKey shaping the live-injection path uses so the cold-seed
+	// path doesn't silently drop them into the unpartitioned jar.
+	if c.TopFrameSiteKey != "" {
+		p.PartitionKey = &network.CookiePartitionKey{
+			TopLevelSite:         c.TopFrameSiteKey,
+			HasCrossSiteAncestor: c.HasCrossSiteAncestor != 0,
+		}
+	}
+
 	return p
 }
 
