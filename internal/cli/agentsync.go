@@ -139,22 +139,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 
 	// Cookie provider: read+decrypt+filter fresh each call so the loop always
 	// injects current values.
-	provider := func() ([]chrome.Cookie, error) {
-		blocklist, err := loadRequiredAgentSyncPolicy(requiredPolicy)
-		if err != nil {
-			return nil, err
-		}
-		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
-		if err != nil {
-			return nil, err
-		}
-		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
-		if agentSyncVerbose {
-			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
-				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
-		}
-		return cookies, nil
-	}
+	provider := newAgentSyncCookieProvider(dbPath, key, skipDBSC, domainFilter, requiredPolicy)
 
 	userDataDir := agentSyncUserDataDir
 	if userDataDir == "" {
@@ -252,6 +237,25 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "agentcookie agent-sync: stopped")
 	return nil
+}
+
+func newAgentSyncCookieProvider(dbPath string, key []byte, skipDBSC bool, domainFilter []string, requiredPolicy string) livecdp.CookieProvider {
+	return func() ([]chrome.Cookie, error) {
+		blocklist, err := loadRequiredAgentSyncPolicy(requiredPolicy)
+		if err != nil {
+			return nil, err
+		}
+		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
+		if agentSyncVerbose {
+			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
+				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
+		}
+		return cookies, nil
+	}
 }
 
 type agentSyncSigningSummary struct {

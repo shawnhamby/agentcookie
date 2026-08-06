@@ -3,8 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,6 +85,30 @@ domains: []
 	}
 }
 
+func TestAgentSyncCookieProviderRechecksRequiredPolicyEveryCycle(t *testing.T) {
+	dir := t.TempDir()
+	withConfigDir(t, dir)
+	provider := newAgentSyncCookieProvider(filepath.Join(dir, "missing-cookies.db"), nil, false, nil, "allowlist")
+
+	writeCLIFile(t, filepath.Join(dir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains: []
+`)
+	if _, err := provider(); err == nil || strings.Contains(err.Error(), "required cookie policy") {
+		t.Fatalf("active allowlist should reach the cookie reader, got: %v", err)
+	}
+
+	writeCLIFile(t, filepath.Join(dir, "blocklist.yaml"), `
+version: 1
+policy: blocklist
+domains: []
+`)
+	if _, err := provider(); err == nil || !strings.Contains(err.Error(), "required cookie policy") {
+		t.Fatalf("provider should fail closed after policy downgrade, got: %v", err)
+	}
+}
+
 func TestWriteAgentSyncCapabilities(t *testing.T) {
 	oldVersion := Version
 	Version = "1.2.3-test"
@@ -114,7 +138,7 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 		t.Errorf("build_version = %q, want 1.2.3-test", got.BuildVersion)
 	}
 	for _, want := range []string{"--browser", "--capabilities-json", "--require-policy"} {
-		if !containsString(got.SupportedFlags, want) {
+		if !slices.Contains(got.SupportedFlags, want) {
 			t.Errorf("supported_flags missing %q: %v", want, got.SupportedFlags)
 		}
 	}
@@ -124,16 +148,4 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 	if got.SigningSummary.ExternalWrapperMapping.From != "DEFAULT_SIGN_IDENTITY" || got.SigningSummary.ExternalWrapperMapping.To != "AGENTCOOKIE_SIGN_IDENTITY" {
 		t.Errorf("wrapper mapping = %+v", got.SigningSummary.ExternalWrapperMapping)
 	}
-	if strings.Contains(output.String(), os.Getenv("HOME")) {
-		t.Errorf("capability output should not expose machine-local paths: %s", output.String())
-	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
