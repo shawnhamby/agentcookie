@@ -53,7 +53,12 @@ type OwnedChrome struct {
 // waits for the CDP endpoint, and returns the handle. chromePath empty ->
 // FindChrome. headless uses the new headless mode (full feature parity with
 // headed for cookie/context behavior).
-func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port int, headless bool) (*OwnedChrome, error) {
+//
+// userAgent, when non-empty, overrides the browser User-Agent at launch (the
+// same real-Chrome UA agent-browser workers use), so an attached agent does not
+// leak a "HeadlessChrome" token to bot detectors like DataDome. Automation
+// fingerprint flags are always applied to match agent-browser's worker profile.
+func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port int, headless bool, userAgent, windowSize string) (*OwnedChrome, error) {
 	if chromePath == "" {
 		var err error
 		if chromePath, err = FindChrome(); err != nil {
@@ -69,6 +74,19 @@ func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port
 		"--remote-debugging-address=127.0.0.1",
 		"--no-first-run",
 		"--no-default-browser-check",
+		// Anti-detection: hide the automation flag so navigator.webdriver and the
+		// blink automation surface match agent-browser's worker profile.
+		"--disable-blink-features=AutomationControlled",
+	}
+	if windowSize != "" {
+		// Give headless a real display size (default is 800x600, which no real
+		// desktop has); pass the actual machine's logical resolution.
+		args = append(args, "--window-size="+windowSize)
+	}
+	if userAgent != "" {
+		// Strips the HeadlessChrome token from both navigator.userAgent and the
+		// HTTP User-Agent header (the one server-side bot checks read).
+		args = append(args, "--user-agent="+userAgent)
 	}
 	if headless {
 		args = append(args, "--headless=new")

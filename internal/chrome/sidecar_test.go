@@ -65,6 +65,64 @@ func TestWriteCookiesSidecar_HappyPath(t *testing.T) {
 	}
 }
 
+func TestWriteCookiesSidecar_PartitionKeysRoundTrip(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "cookies.db")
+	cookies := []Cookie{
+		{
+			HostKey: ".example.com", Name: "partitioned", Value: "same-value", Path: "/",
+			SourceScheme: 2, SourcePort: 443, TopFrameSiteKey: "https://first.example",
+			HasCrossSiteAncestor: 0,
+		},
+		{
+			HostKey: ".example.com", Name: "partitioned", Value: "same-value", Path: "/",
+			SourceScheme: 2, SourcePort: 443, TopFrameSiteKey: "https://second.example",
+			HasCrossSiteAncestor: 1,
+		},
+	}
+	if n, err := WriteCookiesSidecar(target, cookies, nil); err != nil {
+		t.Fatalf("WriteCookiesSidecar: %v", err)
+	} else if n != len(cookies) {
+		t.Fatalf("wrote %d cookies, want %d", n, len(cookies))
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+target+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open sidecar: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT top_frame_site_key, has_cross_site_ancestor FROM cookies ORDER BY top_frame_site_key`)
+	if err != nil {
+		t.Fatalf("query partition keys: %v", err)
+	}
+	defer rows.Close()
+
+	var got []struct {
+		topFrameSiteKey      string
+		hasCrossSiteAncestor int
+	}
+	for rows.Next() {
+		var key struct {
+			topFrameSiteKey      string
+			hasCrossSiteAncestor int
+		}
+		if err := rows.Scan(&key.topFrameSiteKey, &key.hasCrossSiteAncestor); err != nil {
+			t.Fatalf("scan partition key: %v", err)
+		}
+		got = append(got, key)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate partition keys: %v", err)
+	}
+	if len(got) != len(cookies) {
+		t.Fatalf("read %d rows, want %d", len(got), len(cookies))
+	}
+	for i, key := range got {
+		if key.topFrameSiteKey != cookies[i].TopFrameSiteKey || key.hasCrossSiteAncestor != cookies[i].HasCrossSiteAncestor {
+			t.Errorf("row %d partition key: got (%q, %d), want (%q, %d)", i, key.topFrameSiteKey, key.hasCrossSiteAncestor, cookies[i].TopFrameSiteKey, cookies[i].HasCrossSiteAncestor)
+		}
+	}
+}
+
 func TestWriteCookiesSidecar_AtomicReplace(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "cookies-plain.db")
 	if _, err := WriteCookiesSidecar(target, []Cookie{

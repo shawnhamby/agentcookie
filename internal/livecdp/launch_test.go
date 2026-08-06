@@ -39,7 +39,7 @@ func TestLaunchOwnedChrome_LiveInject(t *testing.T) {
 	defer cancel()
 
 	// Port 0 is invalid for Chrome; pick a high fixed port unlikely to clash.
-	oc, err := LaunchOwnedChrome(ctx, "", dir, 9411, true)
+	oc, err := LaunchOwnedChrome(ctx, "", dir, 9411, true, "", "")
 	if err != nil {
 		t.Fatalf("LaunchOwnedChrome: %v", err)
 	}

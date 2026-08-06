@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"database/sql"
 	"fmt"
+	"os"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -28,6 +29,13 @@ type Cookie struct {
 	SameSite      int    `json:"samesite"`
 	SourceScheme  int    `json:"source_scheme"`
 	SourcePort    int    `json:"source_port"`
+	// TopFrameSiteKey is Chrome's CHIPS partition key (the top-level site the
+	// cookie was set under). Empty means an ordinary, unpartitioned cookie.
+	// HasCrossSiteAncestor completes the partition key CDP requires
+	// (network.CookiePartitionKey needs both fields to reproduce Chrome's own
+	// key) and is only meaningful when TopFrameSiteKey is non-empty.
+	TopFrameSiteKey      string `json:"top_frame_site_key"`
+	HasCrossSiteAncestor int    `json:"has_cross_site_ancestor"`
 }
 
 // DefaultCookiesPath returns the default Chrome cookies SQLite path on macOS.
@@ -48,13 +56,27 @@ func ReadCookiesForHost(dbPath, hostPattern string, key []byte) ([]Cookie, error
 	}
 	defer db.Close()
 
-	query := `
+	cols, err := readTableColumns(db, "cookies")
+	if err != nil {
+		return nil, fmt.Errorf("read cookies schema: %w", err)
+	}
+	topFrameSiteKeyExpr := "''"
+	if cols["top_frame_site_key"] {
+		topFrameSiteKeyExpr = "top_frame_site_key"
+	}
+	hasCrossSiteAncestorExpr := "0"
+	if cols["has_cross_site_ancestor"] {
+		hasCrossSiteAncestorExpr = "has_cross_site_ancestor"
+	}
+
+	query := fmt.Sprintf(`
 SELECT host_key, name, encrypted_value, path,
        expires_utc, is_secure, is_httponly, last_access_utc,
        has_expires, is_persistent, priority, samesite,
-       source_scheme, source_port
+       source_scheme, source_port, %s AS top_frame_site_key,
+       %s AS has_cross_site_ancestor
 FROM cookies
-WHERE host_key LIKE ?`
+WHERE host_key LIKE ?`, topFrameSiteKeyExpr, hasCrossSiteAncestorExpr)
 	rows, err := db.Query(query, hostPattern)
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)
@@ -62,6 +84,8 @@ WHERE host_key LIKE ?`
 	defer rows.Close()
 
 	var cookies []Cookie
+	skipped := 0
+	const maxSkipWarnings = 5 // bound the log: a wrong key fails every cookie
 	for rows.Next() {
 		var (
 			c              Cookie
@@ -71,13 +95,24 @@ WHERE host_key LIKE ?`
 			&c.HostKey, &c.Name, &encryptedValue, &c.Path,
 			&c.ExpiresUTC, &c.IsSecure, &c.IsHTTPOnly, &c.LastAccessUTC,
 			&c.HasExpires, &c.IsPersistent, &c.Priority, &c.SameSite,
-			&c.SourceScheme, &c.SourcePort,
+			&c.SourceScheme, &c.SourcePort, &c.TopFrameSiteKey, &c.HasCrossSiteAncestor,
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 		plain, err := decryptValue(encryptedValue, key)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt %s/%s: %w", c.HostKey, c.Name, err)
+			// A single corrupt/undecryptable store entry must not abort the
+			// whole read: it would take down every consumer (agent-sync,
+			// export) over one bad cookie, often for an irrelevant host.
+			// Bound the per-cookie log so a wrong-key read (every cookie
+			// fails) does not flood stderr before the aggregate error below.
+			if skipped < maxSkipWarnings {
+				fmt.Fprintf(os.Stderr, "agentcookie: skipping undecryptable cookie %s/%s: %v\n", c.HostKey, c.Name, err)
+			} else if skipped == maxSkipWarnings {
+				fmt.Fprintf(os.Stderr, "agentcookie: further undecryptable-cookie warnings suppressed\n")
+			}
+			skipped++
+			continue
 		}
 		// Chrome 127+ on macOS embeds a 32-byte host-bound prefix in the
 		// plaintext. Strip it so downstream consumers (CDP, dumps, fixtures)
@@ -88,6 +123,14 @@ WHERE host_key LIKE ?`
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+	// Widespread decrypt failure is not corruption; it means the key does not
+	// fit this store (wrong browser/profile). Even strict PKCS#7 lets a small
+	// fraction of wrong-key decrypts through (~0.4%), so gate on the failure
+	// ratio rather than requiring zero survivors, and fail loudly instead of
+	// injecting the surviving garbage as a successful read.
+	if skipped > 0 && skipped >= len(cookies) {
+		return nil, fmt.Errorf("%d of %d cookies failed decrypt: key does not match this cookie store (wrong browser or profile?)", skipped, skipped+len(cookies))
 	}
 	return cookies, nil
 }
@@ -113,13 +156,20 @@ func decryptValue(encrypted, key []byte) (string, error) {
 	mode := cipher.NewCBCDecrypter(block, iv)
 	pt := make([]byte, len(ct))
 	mode.CryptBlocks(pt, ct)
-	// PKCS#7 unpad.
+	// Strict PKCS#7 unpad: every pad byte must equal the pad length. A
+	// last-byte-only check passes ~6% of wrong-key decrypts, which would let
+	// a key/store mismatch masquerade as a mostly-successful read.
 	if len(pt) == 0 {
 		return "", fmt.Errorf("empty plaintext after decrypt")
 	}
 	pad := int(pt[len(pt)-1])
 	if pad < 1 || pad > aes.BlockSize || pad > len(pt) {
 		return "", fmt.Errorf("invalid PKCS#7 padding byte %d", pad)
+	}
+	for _, b := range pt[len(pt)-pad:] {
+		if int(b) != pad {
+			return "", fmt.Errorf("invalid PKCS#7 padding (inconsistent pad bytes)")
+		}
 	}
 	return string(pt[:len(pt)-pad]), nil
 }

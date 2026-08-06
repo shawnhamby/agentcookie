@@ -19,6 +19,10 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/watcher"
 )
 
+// defaultAgentSyncPort is the flag default and the port that keeps the legacy
+// owned-profile dir name (agent-chrome) for existing consumers.
+const defaultAgentSyncPort = 9400
+
 var (
 	agentSyncPort        int
 	agentSyncHeaded      bool
@@ -27,7 +31,10 @@ var (
 	agentSyncSkipDBSC    bool
 	agentSyncDomains     []string
 	agentSyncBrowser     string
+	agentSyncProfile     string
 	agentSyncVerbose     bool
+	agentSyncUserAgent   string
+	agentSyncWindowSize  string
 )
 
 var agentSyncCmd = &cobra.Command{
@@ -59,14 +66,17 @@ transfer to another browser and are reported, not faked. Non-DBSC sites
 }
 
 func init() {
-	agentSyncCmd.Flags().IntVar(&agentSyncPort, "port", 9400, "loopback Chrome remote-debugging port for the owned browser")
+	agentSyncCmd.Flags().IntVar(&agentSyncPort, "port", defaultAgentSyncPort, "loopback Chrome remote-debugging port for the owned browser")
 	agentSyncCmd.Flags().BoolVar(&agentSyncHeaded, "headed", false, "show the owned browser window (default: headless)")
 	agentSyncCmd.Flags().StringVar(&agentSyncChromePath, "chrome-path", "", "override the Chrome executable (default: auto-detect)")
-	agentSyncCmd.Flags().StringVar(&agentSyncUserDataDir, "user-data-dir", "", "owned-browser profile dir (default: ~/.agentcookie/agent-chrome)")
+	agentSyncCmd.Flags().StringVar(&agentSyncUserDataDir, "user-data-dir", "", "owned-browser profile dir (default: ~/.agentcookie/agent-chrome, or agent-chrome-<port> for non-default ports)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC); also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 	agentSyncCmd.Flags().StringSliceVar(&agentSyncDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com")
 	agentSyncCmd.Flags().StringVar(&agentSyncBrowser, "browser", "", "source browser name (default: source.yaml browser, then Chrome)")
+	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "source browser profile dir name (default: source.yaml profile when the browser matches source.yaml, else the browser's default profile)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
+	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
+	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; default: Chrome's 800x600 headless)")
 }
 
 func runAgentSync(cmd *cobra.Command, args []string) error {
@@ -97,6 +107,11 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	dbPath, err := resolveSourceDBPath(cfg, agentSyncBrowser, agentSyncProfile, browserName)
+	if err != nil {
+		return err
+	}
 	skipDBSC := agentSyncSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 	domainFilter := agentSyncDomains
 
@@ -107,7 +122,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
@@ -125,13 +140,20 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve home dir: %w", err)
 		}
-		userDataDir = filepath.Join(home, ".agentcookie", "agent-chrome")
+		// Per-port default so concurrent instances (e.g. 9400 research +
+		// 9401 instruction-sync) never collide on one owned-profile dir.
+		// The default port keeps the legacy dir name for compatibility.
+		dirName := "agent-chrome"
+		if agentSyncPort != defaultAgentSyncPort {
+			dirName = fmt.Sprintf("agent-chrome-%d", agentSyncPort)
+		}
+		userDataDir = filepath.Join(home, ".agentcookie", dirName)
 	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded)
+	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded, agentSyncUserAgent, agentSyncWindowSize)
 	if err != nil {
 		return err
 	}
@@ -142,12 +164,25 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	defer browserCancel()
 
+	// Establish the browser-level CDP connection once, then drive all cookie
+	// injection through the browser executor + the shutdown-scoped ctx (never
+	// browserCtx). A CDP connector (agent-browser/browser-use) closes the pages
+	// browserCtx is bound to, which cancels browserCtx; the browser-level
+	// connection is owned by the allocator and survives, so injection keeps
+	// working across connector churn. (Fixes: the poll loop used to die with
+	// "list targets: context canceled" once a connector attached, so the
+	// connector's own context never got cookies -- the agent woke up logged out.)
+	if err := chromedp.Run(browserCtx); err != nil {
+		return fmt.Errorf("agent-sync: establish browser connection: %w", err)
+	}
+	browser := chromedp.FromContext(browserCtx).Browser
+
 	syncLog := func(format string, a ...any) {
 		if agentSyncVerbose {
 			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: "+format+"\n", a...)
 		}
 	}
-	syncer := livecdp.NewSyncer(browserCtx, provider, syncLog)
+	syncer := livecdp.NewSyncer(ctx, browser, provider, syncLog)
 
 	// Initial inject so the owned browser's default context is logged in
 	// immediately; also surfaces connection/cookie errors at startup.
@@ -175,7 +210,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	// into in their real Chrome becomes logged-in in the agent browser too.
 	// A failed cycle is logged and the watcher keeps running.
 	w, err := watcher.New(watcher.Config{
-		CookiesPath: cfg.Chrome.DBPath,
+		CookiesPath: dbPath,
 		LogLabel:    "agentcookie agent-sync",
 		Push: func(context.Context) (int, error) {
 			return syncer.ReinjectAll()

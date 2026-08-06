@@ -60,6 +60,46 @@ func TestWriteCookies_PlainV10RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteCookies_PartitionKeysRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Cookies")
+	seedEmptyCookiesDB(t, path)
+
+	in := []Cookie{
+		{
+			HostKey: ".example.com", Name: "partitioned", Value: "same-value", Path: "/",
+			SourceScheme: 2, SourcePort: 443, TopFrameSiteKey: "https://first.example",
+			HasCrossSiteAncestor: 0,
+		},
+		{
+			HostKey: ".example.com", Name: "partitioned", Value: "same-value", Path: "/",
+			SourceScheme: 2, SourcePort: 443, TopFrameSiteKey: "https://second.example",
+			HasCrossSiteAncestor: 1,
+		},
+	}
+	if n, err := WriteCookies(path, in, testKey); err != nil {
+		t.Fatalf("WriteCookies: %v", err)
+	} else if n != len(in) {
+		t.Fatalf("wrote %d cookies, want %d", n, len(in))
+	}
+
+	got, err := ReadCookiesForHost(path, "%example.com", testKey)
+	if err != nil {
+		t.Fatalf("ReadCookiesForHost: %v", err)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("read %d cookies, want %d", len(got), len(in))
+	}
+	partitionKeys := make(map[string]int, len(got))
+	for _, cookie := range got {
+		partitionKeys[cookie.TopFrameSiteKey] = cookie.HasCrossSiteAncestor
+	}
+	for _, want := range in {
+		if gotAncestor, ok := partitionKeys[want.TopFrameSiteKey]; !ok || gotAncestor != want.HasCrossSiteAncestor {
+			t.Errorf("partition key %q: got ancestor=%d, present=%t; want ancestor=%d", want.TopFrameSiteKey, gotAncestor, ok, want.HasCrossSiteAncestor)
+		}
+	}
+}
+
 func TestWriteCookies_NoAppBoundPrefixInPlaintext(t *testing.T) {
 	// The whole point of v0.9: decrypted plaintext is the raw cookie value,
 	// not SHA256(host_key) || value. PP CLIs on kooky v0.2.2 read this file

@@ -119,6 +119,18 @@ func buildParam(c chrome.Cookie) *network.CookieParam {
 		ss = network.CookieSameSiteLax
 	}
 	p.SameSite = ss
+
+	// CHIPS-partitioned cookies (e.g. Cloudflare's cf_clearance) carry a
+	// non-empty top_frame_site_key in Chrome's own store. Without setting
+	// PartitionKey here, Network.setCookies stores the cookie unpartitioned,
+	// where the site that actually requests it (scoped to its own top-level
+	// site) never sees it.
+	if c.TopFrameSiteKey != "" {
+		p.PartitionKey = &network.CookiePartitionKey{
+			TopLevelSite:         c.TopFrameSiteKey,
+			HasCrossSiteAncestor: c.HasCrossSiteAncestor != 0,
+		}
+	}
 	return p
 }
 

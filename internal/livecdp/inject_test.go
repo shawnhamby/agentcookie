@@ -135,6 +135,44 @@ func TestBuildCookieParams_SkipsInvalid(t *testing.T) {
 	}
 }
 
+// TestBuildCookieParams_PartitionKey is the CHIPS regression case: a
+// partitioned cookie (e.g. Cloudflare's cf_clearance) carries a non-empty
+// top_frame_site_key in Chrome's own store. Without setting PartitionKey,
+// Network.setCookies stores it unpartitioned and the site that actually
+// requests it never sees it.
+func TestBuildCookieParams_PartitionKey(t *testing.T) {
+	c := chrome.Cookie{
+		HostKey:              ".chatgpt.com",
+		Name:                 "cf_clearance",
+		Value:                "v",
+		Path:                 "/",
+		IsSecure:             1,
+		TopFrameSiteKey:      "https://chatgpt.com",
+		HasCrossSiteAncestor: 1,
+	}
+	p := BuildCookieParams([]chrome.Cookie{c})[0]
+	if p.PartitionKey == nil {
+		t.Fatalf("partitioned cookie must carry a non-nil PartitionKey")
+	}
+	if p.PartitionKey.TopLevelSite != "https://chatgpt.com" {
+		t.Errorf("PartitionKey.TopLevelSite: got %q", p.PartitionKey.TopLevelSite)
+	}
+	if !p.PartitionKey.HasCrossSiteAncestor {
+		t.Errorf("PartitionKey.HasCrossSiteAncestor: got false, want true")
+	}
+}
+
+// TestBuildCookieParams_PartitionKeyOmittedWhenUnpartitioned confirms an
+// ordinary cookie (empty top_frame_site_key, the common case) leaves
+// PartitionKey nil so Chrome stores it in the normal unpartitioned jar.
+func TestBuildCookieParams_PartitionKeyOmittedWhenUnpartitioned(t *testing.T) {
+	c := chrome.Cookie{HostKey: "github.com", Name: "user_session", Value: "v", Path: "/", IsSecure: 1}
+	p := BuildCookieParams([]chrome.Cookie{c})[0]
+	if p.PartitionKey != nil {
+		t.Errorf("unpartitioned cookie must have nil PartitionKey, got %+v", p.PartitionKey)
+	}
+}
+
 func TestBuildCookieParams_Empty(t *testing.T) {
 	if got := BuildCookieParams(nil); len(got) != 0 {
 		t.Errorf("nil input -> empty params, got %d", len(got))

@@ -151,6 +151,11 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// on the map. Serialize whole cycles.
 	var cycleMu sync.Mutex
 
+	dbPath, err := resolveSourceDBPath(cfg, cmuxSyncBrowser, "", browserName)
+	if err != nil {
+		return err
+	}
+
 	syncOnce := func(ctx context.Context) (int, error) {
 		cycleMu.Lock()
 		defer cycleMu.Unlock()
@@ -158,7 +163,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return 0, err
 		}
-		cookies, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
 		if err != nil {
 			return 0, err
 		}
@@ -215,7 +220,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	// cycle (cmux down) is logged and the watcher keeps running; the next
 	// change retries.
 	w, err := watcher.New(watcher.Config{
-		CookiesPath: cfg.Chrome.DBPath,
+		CookiesPath: dbPath,
 		LogLabel:    "agentcookie cmux-sync --watch",
 		Push:        syncOnce,
 		OnEvent: func(ev watcher.Event) {
@@ -227,7 +232,7 @@ func runCmuxSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("init watcher: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: watching %s, injecting into cmux\n", cfg.Chrome.DBPath)
+	fmt.Fprintf(os.Stderr, "agentcookie cmux-sync --watch: watching %s, injecting into cmux\n", dbPath)
 	return w.Run(cmd.Context())
 }
 

@@ -35,11 +35,21 @@ func TestToExportCookies(t *testing.T) {
 			HasExpires: 0,  // session cookie -> no expirationDate
 			ExpiresUTC: 99, // ignored because HasExpires == 0
 		},
+		{
+			HostKey:              ".chatgpt.com",
+			Name:                 "cf_clearance",
+			Value:                "chips-value",
+			Path:                 "/",
+			IsSecure:             1,
+			SameSite:             2,
+			TopFrameSiteKey:      "https://chatgpt.com",
+			HasCrossSiteAncestor: 1,
+		},
 	}
 
 	out := toExportCookies(cookies)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 cookies, got %d", len(out))
+	if len(out) != 3 {
+		t.Fatalf("expected 3 cookies, got %d", len(out))
 	}
 
 	host := out[0]
@@ -59,6 +69,20 @@ func TestToExportCookies(t *testing.T) {
 	}
 	if sess.ExpirationDate != nil {
 		t.Fatalf("session cookie must omit expirationDate, got %v", *sess.ExpirationDate)
+	}
+	if sess.PartitionKey != nil {
+		t.Fatalf("unpartitioned cookie must omit PartitionKey, got %+v", sess.PartitionKey)
+	}
+
+	chips := out[2]
+	if chips.PartitionKey == nil {
+		t.Fatalf("CHIPS cookie must carry a non-nil PartitionKey")
+	}
+	if chips.PartitionKey.TopLevelSite != "https://chatgpt.com" {
+		t.Fatalf("PartitionKey.TopLevelSite: got %q", chips.PartitionKey.TopLevelSite)
+	}
+	if !chips.PartitionKey.HasCrossSiteAncestor {
+		t.Fatalf("PartitionKey.HasCrossSiteAncestor: got false, want true")
 	}
 
 	// The output must be a JSON array of objects with the field names orca's

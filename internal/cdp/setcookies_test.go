@@ -182,6 +182,42 @@ func TestBuildCookieParam_HostPrefixRejectionGuard(t *testing.T) {
 	}
 }
 
+// TestBuildCookieParam_PartitionKey covers the cold-seed path's CHIPS
+// handling, mirroring the live-injection test: a partitioned cookie (e.g.
+// Cloudflare's cf_clearance) must carry PartitionKey so it doesn't land in
+// the unpartitioned jar.
+func TestBuildCookieParam_PartitionKey(t *testing.T) {
+	c := chrome.Cookie{
+		HostKey:              ".chatgpt.com",
+		Name:                 "cf_clearance",
+		Value:                "v",
+		Path:                 "/",
+		IsSecure:             1,
+		TopFrameSiteKey:      "https://chatgpt.com",
+		HasCrossSiteAncestor: 1,
+	}
+	got := buildCookieParam(c, "v")
+	if got.PartitionKey == nil {
+		t.Fatalf("partitioned cookie must carry a non-nil PartitionKey")
+	}
+	if got.PartitionKey.TopLevelSite != "https://chatgpt.com" {
+		t.Errorf("PartitionKey.TopLevelSite: got %q", got.PartitionKey.TopLevelSite)
+	}
+	if !got.PartitionKey.HasCrossSiteAncestor {
+		t.Errorf("PartitionKey.HasCrossSiteAncestor: got false, want true")
+	}
+}
+
+// TestBuildCookieParam_PartitionKeyOmittedWhenUnpartitioned confirms an
+// ordinary cookie (empty top_frame_site_key) leaves PartitionKey nil.
+func TestBuildCookieParam_PartitionKeyOmittedWhenUnpartitioned(t *testing.T) {
+	c := chrome.Cookie{HostKey: "github.com", Name: "user_session", Value: "v", Path: "/", IsSecure: 1}
+	got := buildCookieParam(c, "v")
+	if got.PartitionKey != nil {
+		t.Errorf("unpartitioned cookie must have nil PartitionKey, got %+v", got.PartitionKey)
+	}
+}
+
 // TestBuildCookieParam_DomainCookieKeepsDomain confirms a genuinely
 // domain-scoped cookie (leading dot, not __Host-) still carries its
 // dot-stripped Domain so its subdomain scope round-trips.
