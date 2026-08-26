@@ -115,3 +115,44 @@ func TestExportSameSite(t *testing.T) {
 		}
 	}
 }
+
+func TestExportPartitionKeyRoundTrip(t *testing.T) {
+	tests := []struct {
+		name      string
+		cookie    chrome.Cookie
+		wantKey   string
+		wantCross bool
+	}{
+		{name: "unpartitioned", cookie: chrome.Cookie{HostKey: ".example.com", Name: "plain"}},
+		{
+			name: "partitioned",
+			cookie: chrome.Cookie{
+				HostKey: ".example.com", Name: "chips",
+				TopFrameSiteKey: "https://top.example", HasCrossSiteAncestor: 1,
+			},
+			wantKey: "https://top.example", wantCross: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw, err := json.Marshal(toExportCookies([]chrome.Cookie{test.cookie}))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got []exportCookie
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if test.wantKey == "" {
+				if got[0].PartitionKey != nil {
+					t.Fatalf("partitionKey = %+v, want omitted", got[0].PartitionKey)
+				}
+				return
+			}
+			if got[0].PartitionKey == nil || got[0].PartitionKey.TopLevelSite != test.wantKey || got[0].PartitionKey.HasCrossSiteAncestor != test.wantCross {
+				t.Fatalf("partitionKey = %+v, want key=%q cross=%t", got[0].PartitionKey, test.wantKey, test.wantCross)
+			}
+		})
+	}
+}

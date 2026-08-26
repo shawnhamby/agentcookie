@@ -137,7 +137,7 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 	if got.BuildVersion != "1.2.3-test" {
 		t.Errorf("build_version = %q, want 1.2.3-test", got.BuildVersion)
 	}
-	for _, want := range []string{"--browser", "--capabilities-json", "--require-policy"} {
+	for _, want := range []string{"--browser", "--capabilities-json", "--require-policy", "--user-agent"} {
 		if !slices.Contains(got.SupportedFlags, want) {
 			t.Errorf("supported_flags missing %q: %v", want, got.SupportedFlags)
 		}

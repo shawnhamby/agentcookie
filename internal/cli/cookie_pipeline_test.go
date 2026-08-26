@@ -62,3 +62,34 @@ func TestReadFilteredCookies(t *testing.T) {
 		}
 	})
 }
+
+func TestExportPipelineAllowlist(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	dbPath := filepath.Join(t.TempDir(), "Cookies")
+	seedSourceCookiesDB(t, dbPath, []chrome.Cookie{
+		{HostKey: ".allowed.com", Name: "allowed", Value: "1", Path: "/"},
+		{HostKey: ".other.com", Name: "other", Value: "2", Path: "/"},
+	}, key)
+
+	tests := []struct {
+		name    string
+		domains []config.BlocklistEntry
+		want    int
+	}{
+		{name: "empty allowlist fails closed", want: 0},
+		{name: "only allowlisted host exports", domains: []config.BlocklistEntry{{Pattern: "%.allowed.com"}}, want: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := &config.Blocklist{Version: 1, Policy: config.CookiePolicyAllowlist, Domains: test.domains}
+			cookies, _, err := readFilteredCookies(dbPath, policy, key, false, time.Now().UTC())
+			if err != nil {
+				t.Fatalf("readFilteredCookies: %v", err)
+			}
+			if got := len(toExportCookies(cookies)); got != test.want {
+				t.Fatalf("exported cookies = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
