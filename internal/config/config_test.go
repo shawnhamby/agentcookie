@@ -681,6 +681,30 @@ domains: []
 	}
 }
 
+func TestAdmittedProfileForBrowser(t *testing.T) {
+	edgeCfg := &SourceConfig{
+		Browser: BrowserRef{Name: "edge", Profile: "Profile 2"},
+	}
+	cases := []struct {
+		name    string
+		browser string
+		cfg     *SourceConfig
+		want    string
+	}{
+		{"chrome default", "chrome", nil, AdmittedChromeProfile},
+		{"edge default", "edge", nil, AdmittedEdgeProfile},
+		{"source.yaml edge profile", "edge", edgeCfg, "Profile 2"},
+		{"chrome ignores edge source profile", "chrome", edgeCfg, AdmittedChromeProfile},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AdmittedProfileForBrowser(tc.browser, tc.cfg); got != tc.want {
+				t.Fatalf("AdmittedProfileForBrowser(%q) = %q, want %q", tc.browser, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadBlocklistRejectsUnknownVersion(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "blocklist.yaml", `

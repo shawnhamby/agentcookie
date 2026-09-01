@@ -351,8 +351,9 @@ func buildReport(d doctorDeps) DoctorReport {
 	if sinkCfg != nil {
 		cdpProfileDir = sinkCfg.CDP.ProfileDir
 	}
-	sourceBrowser := sourceBrowserFromConfig(d.ConfigDir, srcCfg)
-	checks = append(checks, checkChromeStores(cdpProfileDir, sourceBrowser))
+	// Extra-profile discovery scans both admitted browsers (Chrome + Edge).
+	// source.yaml browser.name scopes export/agent-sync defaults only.
+	checks = append(checks, checkChromeStores(cdpProfileDir))
 
 	exit := 0
 	for _, c := range checks {
@@ -1567,23 +1568,19 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
 // profileDir is passed to DiscoverForSource to include a configured CDP profile.
-// sourceBrowser scopes automatic discovery to source.yaml's admitted browser.
-// sourceBrowserFromConfig returns source.yaml browser.name for discovery
-// scoping. Uses the full push config when present; otherwise LoadSourceLocal
-// so local-loop source.yaml (browser/profile without sink.url) still applies.
-func sourceBrowserFromConfig(configDir string, srcCfg *config.SourceConfig) string {
-	if srcCfg != nil {
-		return srcCfg.Browser.Name
-	}
-	local, err := config.LoadSourceLocal(configDir)
-	if err != nil || local == nil {
-		return ""
-	}
-	return local.Browser.Name
+// Automatic discovery scans both admitted browsers (Chrome + Edge); Brave and
+// Arc roots are never walked and their Safe Storage keys are never read.
+
+func checkChromeStores(profileDir string) Check {
+	return checkChromeStoresWith(profileDir, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)
 }
 
-func checkChromeStores(profileDir, sourceBrowser string) Check {
-	result := chromepaths.DiscoverForSource(profileDir, sourceBrowser)
+func checkChromeStoresWith(
+	profileDir string,
+	lookupBrowser func(string) (chrome.Browser, error),
+	passwordFor func(chrome.Browser) (string, error),
+) Check {
+	result := chromepaths.DiscoverForSource(profileDir, "")
 
 	if len(result.Stores) == 0 && len(result.Skipped) == 0 {
 		return Check{
@@ -1628,12 +1625,12 @@ func checkChromeStores(profileDir, sourceBrowser string) Check {
 			label += " (default)"
 		}
 		// Try to get the decrypt key for this browser.
-		browser, err := chrome.LookupBrowser(s.Browser)
+		browser, err := lookupBrowser(s.Browser)
 		if err != nil {
 			unreadable = append(unreadable, label+": unsupported browser")
 			continue
 		}
-		_, err = chrome.SafeStoragePasswordFor(browser)
+		_, err = passwordFor(browser)
 		if err != nil {
 			if chrome.IsKeychainLocked(err) {
 				unreadable = append(unreadable, label+": keychain locked")

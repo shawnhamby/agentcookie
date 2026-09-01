@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -689,6 +690,71 @@ func TestCheckSourceAdapter(t *testing.T) {
 			t.Errorf("detail should list supported names: %q", c.Detail)
 		}
 	})
+}
+
+// TestCheckChromeStores_NeverTouchesBraveKeychain verifies the pre-fix call
+// path (Discover walking BraveSoftware + doctor probing every store's Safe
+// Storage key) cannot reach Brave. Uses injected keychain mocks only.
+func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var appSupport string
+	if runtime.GOOS == "darwin" {
+		appSupport = filepath.Join(home, "Library", "Application Support")
+	} else {
+		appSupport = filepath.Join(home, ".config")
+	}
+
+	braveRoot := filepath.Join(appSupport, "BraveSoftware", "Brave-Browser")
+	chromeRoot := filepath.Join(appSupport, "Google", "Chrome")
+	if runtime.GOOS == "linux" {
+		chromeRoot = filepath.Join(appSupport, "google-chrome")
+	}
+	edgeRoot := filepath.Join(appSupport, "Microsoft Edge")
+	if runtime.GOOS == "linux" {
+		edgeRoot = filepath.Join(appSupport, "microsoft-edge")
+	}
+
+	for _, spec := range []struct {
+		root, profile string
+	}{
+		{braveRoot, "Default"},
+		{chromeRoot, "Default"},
+		{edgeRoot, "Profile 2"},
+	} {
+		profileDir := filepath.Join(spec.root, spec.profile)
+		networkDir := filepath.Join(profileDir, "Network")
+		if err := os.MkdirAll(networkDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(networkDir, "Cookies"), []byte{}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var keychainServices []string
+	lookup := chrome.LookupBrowser
+	passwordFor := func(b chrome.Browser) (string, error) {
+		keychainServices = append(keychainServices, b.KeychainService)
+		if b.KeychainService == "Brave Safe Storage" {
+			t.Fatal("doctor must never read Brave Safe Storage")
+		}
+		return "mock-password", nil
+	}
+
+	c := checkChromeStoresWith("", lookup, passwordFor)
+	if strings.Contains(strings.ToLower(c.Detail), "brave") {
+		t.Fatalf("doctor detail mentions Brave: %q", c.Detail)
+	}
+	for _, svc := range keychainServices {
+		if strings.Contains(strings.ToLower(svc), "brave") {
+			t.Fatalf("keychain probe touched Brave service %q", svc)
+		}
+	}
+	if runtime.GOOS == "darwin" && len(keychainServices) == 0 {
+		t.Fatal("expected keychain probes for admitted chrome/edge stores")
+	}
 }
 
 // TestHostMatchesAnyAdapter covers the substring fallback used by the

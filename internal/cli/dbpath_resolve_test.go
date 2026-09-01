@@ -29,11 +29,6 @@ func TestResolveSourceDBPath(t *testing.T) {
 	chromeCfg.Browser.Profile = "Default"
 	chromeCfg.Chrome.DBPath = "/configured/chrome/Cookies"
 
-	chromeDefault, err := config.SourceBrowserCookiesPath("chrome", "")
-	if err != nil {
-		t.Fatalf("derive chrome default: %v", err)
-	}
-
 	cases := []struct {
 		name        string
 		cfg         *config.SourceConfig
@@ -53,14 +48,14 @@ func TestResolveSourceDBPath(t *testing.T) {
 			want: "/configured/edge/Cookies",
 		},
 		{
-			name: "browser switch re-derives to target default profile",
+			name: "browser switch re-derives to admitted Chrome Default profile",
 			cfg:  edgeCfg, flagBrowser: "chrome", flagProfile: "", effective: "chrome",
-			want: chromeDefault,
+			want: mustDerive(t, "chrome", config.AdmittedChromeProfile),
 		},
 		{
-			name: "chrome to edge switch re-derives to Edge default profile",
+			name: "chrome to edge switch re-derives to admitted Edge profile",
 			cfg:  chromeCfg, flagBrowser: "edge", flagProfile: "", effective: "edge",
-			want: mustDerive(t, "edge", ""),
+			want: mustDerive(t, "edge", config.AdmittedEdgeProfile),
 		},
 		{
 			name: "explicit --profile re-derives even without a browser switch",

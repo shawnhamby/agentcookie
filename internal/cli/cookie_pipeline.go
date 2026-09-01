@@ -21,7 +21,11 @@ func resolveSourceDBPath(cfg *config.SourceConfig, flagBrowser, flagProfile, eff
 	if (flagBrowser == "" || strings.EqualFold(flagBrowser, cfg.Browser.Name)) && flagProfile == "" {
 		return cfg.Chrome.DBPath, nil
 	}
-	dbPath, err := config.SourceBrowserCookiesPath(effectiveBrowser, flagProfile)
+	profile := flagProfile
+	if profile == "" {
+		profile = config.AdmittedProfileForBrowser(effectiveBrowser, cfg)
+	}
+	dbPath, err := config.SourceBrowserCookiesPath(effectiveBrowser, profile)
 	if err != nil {
 		return "", fmt.Errorf("resolve cookie store for --browser %s: %w", effectiveBrowser, err)
 	}

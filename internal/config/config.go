@@ -137,8 +137,10 @@ type browserPathRef struct {
 }
 
 const (
-	defaultBrowserName    = "chrome"
-	defaultBrowserProfile = "Default"
+	defaultBrowserName       = "chrome"
+	defaultBrowserProfile    = "Default"
+	AdmittedChromeProfile    = "Default"   // Personal
+	AdmittedEdgeProfile      = "Profile 2" // School / WSU research
 )
 
 // Mirror of internal/chrome's browser registry (path side only). Kept in
@@ -155,6 +157,25 @@ var sourceBrowserPaths = map[string]browserPathRef{
 // OS keychain.
 type SecurityRef struct {
 	SharedSecret string `yaml:"shared_secret" json:"-"` // never marshal to JSON
+}
+
+// AdmittedProfileForBrowser returns the profile directory for an admitted
+// source browser. When source.yaml names the same browser, its profile wins;
+// otherwise the machine's admitted defaults apply (Chrome Default, Edge Profile 2).
+func AdmittedProfileForBrowser(name string, cfg *SourceConfig) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		key = defaultBrowserName
+	}
+	if cfg != nil && strings.EqualFold(cfg.Browser.Name, key) && cfg.Browser.Profile != "" {
+		return cfg.Browser.Profile
+	}
+	switch key {
+	case "edge":
+		return AdmittedEdgeProfile
+	default:
+		return AdmittedChromeProfile
+	}
 }
 
 // LoadSource reads source.yaml from dir.
