@@ -47,8 +47,8 @@ func TestLoadSourceBrowserBlockParsesAndDerivesPath(t *testing.T) {
 sink:
   url: http://example.test:9999/sync
 browser:
-  name: atlas
-  profile: Profile 1
+  name: edge
+  profile: Profile 2
 security:
   shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
@@ -56,21 +56,37 @@ security:
 	if err != nil {
 		t.Fatalf("LoadSource: %v", err)
 	}
-	if cfg.Browser.Name != "atlas" || cfg.Browser.Profile != "Profile 1" {
+	if cfg.Browser.Name != "edge" || cfg.Browser.Profile != "Profile 2" {
 		t.Errorf("browser ref: got %+v", cfg.Browser)
 	}
 	home, _ := os.UserHomeDir()
-	// Atlas paths are the same on macOS and Linux (Atlas is macOS-only,
-	// but the path derivation code passes the macOS segments through on Linux
-	// since there's no Linux equivalent).
 	var want string
 	if runtime.GOOS == "linux" {
-		want = filepath.Join(home, ".config", "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies")
+		want = filepath.Join(home, ".config", "microsoft-edge", "Profile 2", "Cookies")
 	} else {
-		want = filepath.Join(home, "Library", "Application Support", "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies")
+		want = filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "Profile 2", "Cookies")
 	}
 	if cfg.Chrome.DBPath != want {
 		t.Errorf("derived DBPath: got %q, want %q", cfg.Chrome.DBPath, want)
+	}
+}
+
+func TestLoadSourceRejectsDisallowedBrowser(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "source.yaml", `
+sink:
+  url: http://example.test:9999/sync
+browser:
+  name: brave
+security:
+  shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`)
+	_, err := LoadSource(dir)
+	if err == nil {
+		t.Fatal("LoadSource with brave browser: expected error")
+	}
+	if !strings.Contains(err.Error(), "admitted sources are chrome and edge only") {
+		t.Fatalf("LoadSource error = %v", err)
 	}
 }
 
@@ -83,8 +99,8 @@ sink:
 chrome:
   db_path: `+explicit+`
 browser:
-  name: atlas
-  profile: Profile 1
+  name: edge
+  profile: Profile 2
 security:
   shared_secret: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `)
@@ -95,7 +111,7 @@ security:
 	if cfg.Chrome.DBPath != explicit {
 		t.Errorf("explicit db_path should win: got %q, want %q", cfg.Chrome.DBPath, explicit)
 	}
-	if cfg.Browser.Name != "atlas" {
+	if cfg.Browser.Name != "edge" {
 		t.Errorf("browser name should remain available for keychain selection, got %q", cfg.Browser.Name)
 	}
 }

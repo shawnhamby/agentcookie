@@ -26,9 +26,18 @@ type Store struct {
 	// v0.7 read from extra profiles.
 	IsDefault bool
 
-	// Browser identifies which browser this store belongs to (e.g.
-	// "chrome", "chromium", "brave", "edge").
+	// Browser identifies which admitted browser this store belongs to
+	// ("chrome" or "edge").
 	Browser string
+}
+
+// DiscoverOptions scopes extra-profile discovery to admitted browsers only.
+type DiscoverOptions struct {
+	// Browser limits automatic root scanning to one admitted browser
+	// ("chrome" or "edge"). Empty scans both admitted browsers.
+	Browser string
+	// ProfileDir is an explicit user-data-dir from CDP or source config.
+	ProfileDir string
 }
 
 // SkippedStore is a profile directory that was found but cannot be used,
@@ -81,45 +90,46 @@ var skipDirs = map[string]bool{
 	"PnaclTranslationCache": true,
 }
 
-// chromeRoots returns the list of Chrome/Chromium user-data-dir roots to scan.
-// Includes the OS-standard locations plus well-known agent-specific directories.
-func chromeRoots() []string {
+// admittedBrowserRoots returns OS-standard user-data-dir roots for admitted
+// browsers (Chrome and Edge only). Generic Chromium, Brave, and Arc paths are
+// intentionally excluded.
+func admittedBrowserRoots(browser string) []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
 
+	key := strings.ToLower(strings.TrimSpace(browser))
 	var roots []string
 
 	switch runtime.GOOS {
 	case "darwin":
 		appSupport := filepath.Join(home, "Library", "Application Support")
-		roots = append(roots,
-			filepath.Join(appSupport, "Google", "Chrome"),
-			filepath.Join(appSupport, "Chromium"),
-			filepath.Join(appSupport, "BraveSoftware", "Brave-Browser"),
-			filepath.Join(appSupport, "Microsoft Edge"),
-		)
+		if key == "" || key == "chrome" {
+			roots = append(roots, filepath.Join(appSupport, "Google", "Chrome"))
+		}
+		if key == "" || key == "edge" {
+			roots = append(roots, filepath.Join(appSupport, "Microsoft Edge"))
+		}
 	case "linux":
 		configDir := filepath.Join(home, ".config")
-		roots = append(roots,
-			filepath.Join(configDir, "google-chrome"),
-			filepath.Join(configDir, "chromium"),
-			filepath.Join(configDir, "BraveSoftware", "Brave-Browser"),
-			filepath.Join(configDir, "microsoft-edge"),
-		)
+		if key == "" || key == "chrome" {
+			roots = append(roots, filepath.Join(configDir, "google-chrome"))
+		}
+		if key == "" || key == "edge" {
+			roots = append(roots, filepath.Join(configDir, "microsoft-edge"))
+		}
 	}
 
-	// Well-known agent-specific user-data-dirs that often have Cookies
-	// but no Local State (CDP-launched Chromes, sandbox Chromes).
-	roots = append(roots,
-		filepath.Join(home, "chrome-profile"),
-		filepath.Join(home, ".agentcookie", "chrome-profile"),
-	)
-
-	// Honor CHROME_USER_DATA_DIR environment variable if set.
-	if envDir := os.Getenv("CHROME_USER_DATA_DIR"); envDir != "" {
-		roots = append(roots, envDir)
+	// Agent-specific Chrome user-data-dirs (never Edge/Brave/Arc).
+	if key == "" || key == "chrome" {
+		roots = append(roots,
+			filepath.Join(home, "chrome-profile"),
+			filepath.Join(home, ".agentcookie", "chrome-profile"),
+		)
+		if envDir := os.Getenv("CHROME_USER_DATA_DIR"); envDir != "" && !isDisallowedRoot(envDir) {
+			roots = append(roots, envDir)
+		}
 	}
 
 	return roots
@@ -140,19 +150,35 @@ func osDefaultChromeRoot() string {
 	return ""
 }
 
-// browserForRoot returns a browser identifier based on the root path.
-func browserForRoot(root string) string {
-	lower := strings.ToLower(root)
-	switch {
-	case strings.Contains(lower, "brave"):
-		return "brave"
-	case strings.Contains(lower, "edge"):
-		return "edge"
-	case strings.Contains(lower, "chromium"):
-		return "chromium"
-	default:
-		return "chrome"
+// isDisallowedRoot reports whether root belongs to a non-admitted browser
+// (Brave, Arc, generic Chromium, etc.).
+func isDisallowedRoot(root string) bool {
+	lower := strings.ToLower(filepath.Clean(root))
+	if strings.Contains(lower, "bravesoftware") || strings.Contains(lower, "brave-browser") {
+		return true
 	}
+	if strings.Contains(lower, string(filepath.Separator)+"arc"+string(filepath.Separator)) ||
+		strings.HasSuffix(lower, string(filepath.Separator)+"arc") {
+		return true
+	}
+	if strings.Contains(lower, string(filepath.Separator)+"chromium") &&
+		!strings.Contains(lower, "google") {
+		return true
+	}
+	return false
+}
+
+// browserForRoot returns an admitted browser identifier based on the root path.
+// Disallowed roots return "" so callers skip them without touching Keychain.
+func browserForRoot(root string) string {
+	if isDisallowedRoot(root) {
+		return ""
+	}
+	lower := strings.ToLower(root)
+	if strings.Contains(lower, "edge") || strings.Contains(lower, "microsoft-edge") {
+		return "edge"
+	}
+	return "chrome"
 }
 
 // Discover scans known Chrome user-data-dirs and returns all usable
@@ -163,12 +189,18 @@ func browserForRoot(root string) string {
 // The result includes both Stores (usable) and Skipped (found but not
 // usable, with reasons), so doctor/status can report skip reasons.
 func Discover() DiscoverResult {
+	return DiscoverWithOptions(DiscoverOptions{})
+}
+
+// DiscoverWithOptions scans admitted browser user-data-dirs and optional
+// explicit profile roots. Brave, Arc, and generic Chromium are never scanned.
+func DiscoverWithOptions(opts DiscoverOptions) DiscoverResult {
 	var result DiscoverResult
 
 	defaultRoot := osDefaultChromeRoot()
 	seen := make(map[string]bool)
 
-	for _, root := range chromeRoots() {
+	for _, root := range admittedBrowserRoots(opts.Browser) {
 		if root == "" {
 			continue
 		}
@@ -189,6 +221,9 @@ func Discover() DiscoverResult {
 		}
 
 		browser := browserForRoot(root)
+		if browser == "" {
+			continue
+		}
 		isDefaultRoot := (abs == defaultRoot || root == defaultRoot)
 
 		for _, entry := range entries {
@@ -237,6 +272,10 @@ func Discover() DiscoverResult {
 				result.Stores = append(result.Stores, *store)
 			}
 		}
+	}
+
+	if opts.ProfileDir != "" {
+		mergeExplicitProfileDir(opts.ProfileDir, &result)
 	}
 
 	return result
@@ -288,65 +327,60 @@ func expandTilde(p string) string {
 	return filepath.Join(home, p[2:])
 }
 
-// DiscoverForConfig returns stores that match the optional config constraints.
-// If profileDir is non-empty, it's treated as an explicit user-data-dir to
-// include in discovery. If profileDir contains profile subdirectories (Default,
-// Profile N), those are scanned the same way Discover scans standard roots.
-// Otherwise, profileDir itself is probed as a profile.
+// DiscoverForConfig returns stores scoped to an optional explicit profile dir.
+// Deprecated: use DiscoverForSource which also honors source.yaml browser.
 func DiscoverForConfig(profileDir string) DiscoverResult {
+	return DiscoverForSource(profileDir, "")
+}
+
+// DiscoverForSource scopes discovery to admitted browsers. When browser is
+// non-empty (from source.yaml or --browser), automatic root scanning is limited
+// to that browser. profileDir adds an explicit user-data-dir when set.
+func DiscoverForSource(profileDir, browser string) DiscoverResult {
 	if profileDir == "" {
-		return Discover()
+		return DiscoverWithOptions(DiscoverOptions{Browser: browser})
 	}
 
 	// A configured profile path is an explicit scope boundary. Do not union it
 	// with every browser/profile discovered on the machine.
 	var result DiscoverResult
+	mergeExplicitProfileDir(profileDir, &result)
+	return result
+}
 
-	// If an explicit profile dir is given (e.g. from config cdp.profile_dir),
-	// add it if not already in the result.
-	if profileDir != "" {
-		// Expand ~ to home directory before filepath.Abs (which treats ~ as literal).
-		expanded := expandTilde(profileDir)
-		abs, err := filepath.Abs(expanded)
-		if err == nil {
-			// Check if any discovered stores already cover this path.
-			found := false
-			for _, s := range result.Stores {
-				if s.Root == abs || filepath.Join(s.Root, s.Profile) == abs {
-					found = true
-					break
-				}
-			}
-			if !found {
-				// First, try scanning profileDir as a user-data-dir with
-				// profile subdirectories (Default, Profile N, etc.).
-				addedFromChildren := scanUserDataDir(abs, &result)
-
-				// If no profile subdirs were found, probe the directory
-				// itself as a profile (e.g., a bare chrome-profile dir).
-				if !addedFromChildren {
-					store, skipReason := probeProfileDir(
-						filepath.Dir(abs),
-						filepath.Base(abs),
-						abs,
-						browserForRoot(abs),
-						false,
-					)
-					if skipReason != "" {
-						result.Skipped = append(result.Skipped, SkippedStore{
-							Root:    filepath.Dir(abs),
-							Profile: filepath.Base(abs),
-							Reason:  skipReason,
-						})
-					} else if store != nil {
-						result.Stores = append(result.Stores, *store)
-					}
-				}
-			}
+func mergeExplicitProfileDir(profileDir string, result *DiscoverResult) {
+	expanded := expandTilde(profileDir)
+	abs, err := filepath.Abs(expanded)
+	if err != nil || isDisallowedRoot(abs) {
+		return
+	}
+	for _, s := range result.Stores {
+		if s.Root == abs || filepath.Join(s.Root, s.Profile) == abs {
+			return
 		}
 	}
-
-	return result
+	browser := browserForRoot(abs)
+	if browser == "" {
+		return
+	}
+	if addedFromChildren := scanUserDataDir(abs, result); !addedFromChildren {
+		store, skipReason := probeProfileDir(
+			filepath.Dir(abs),
+			filepath.Base(abs),
+			abs,
+			browser,
+			false,
+		)
+		if skipReason != "" {
+			result.Skipped = append(result.Skipped, SkippedStore{
+				Root:    filepath.Dir(abs),
+				Profile: filepath.Base(abs),
+				Reason:  skipReason,
+			})
+		} else if store != nil {
+			result.Stores = append(result.Stores, *store)
+		}
+	}
 }
 
 // scanUserDataDir scans root as a Chrome user-data-dir, looking for profile
@@ -359,6 +393,9 @@ func scanUserDataDir(root string, result *DiscoverResult) bool {
 	}
 
 	browser := browserForRoot(root)
+	if browser == "" {
+		return false
+	}
 	foundProfiles := false
 
 	for _, entry := range entries {

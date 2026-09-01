@@ -351,7 +351,8 @@ func buildReport(d doctorDeps) DoctorReport {
 	if sinkCfg != nil {
 		cdpProfileDir = sinkCfg.CDP.ProfileDir
 	}
-	checks = append(checks, checkChromeStores(cdpProfileDir))
+	sourceBrowser := sourceBrowserFromConfig(d.ConfigDir, srcCfg)
+	checks = append(checks, checkChromeStores(cdpProfileDir, sourceBrowser))
 
 	exit := 0
 	for _, c := range checks {
@@ -1565,9 +1566,24 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // Default profile, including agent Chromes that have Cookies but no Local
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
-// profileDir is passed to DiscoverForConfig to include a configured CDP profile.
-func checkChromeStores(profileDir string) Check {
-	result := chromepaths.DiscoverForConfig(profileDir)
+// profileDir is passed to DiscoverForSource to include a configured CDP profile.
+// sourceBrowser scopes automatic discovery to source.yaml's admitted browser.
+// sourceBrowserFromConfig returns source.yaml browser.name for discovery
+// scoping. Uses the full push config when present; otherwise LoadSourceLocal
+// so local-loop source.yaml (browser/profile without sink.url) still applies.
+func sourceBrowserFromConfig(configDir string, srcCfg *config.SourceConfig) string {
+	if srcCfg != nil {
+		return srcCfg.Browser.Name
+	}
+	local, err := config.LoadSourceLocal(configDir)
+	if err != nil || local == nil {
+		return ""
+	}
+	return local.Browser.Name
+}
+
+func checkChromeStores(profileDir, sourceBrowser string) Check {
+	result := chromepaths.DiscoverForSource(profileDir, sourceBrowser)
 
 	if len(result.Stores) == 0 && len(result.Skipped) == 0 {
 		return Check{

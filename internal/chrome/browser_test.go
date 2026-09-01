@@ -42,16 +42,15 @@ func TestLookupBrowserDefaultsToChrome(t *testing.T) {
 	}
 }
 
-func TestLookupBrowserAtlas(t *testing.T) {
-	b, err := LookupBrowser("atlas")
-	if err != nil {
-		t.Fatalf("LookupBrowser(atlas): %v", err)
-	}
-	if b.Name != "atlas" {
-		t.Errorf("Name: got %q, want atlas", b.Name)
-	}
-	if b.KeychainAccount != "Atlas" || b.KeychainService != "Atlas Safe Storage" {
-		t.Errorf("keychain: got account=%q service=%q", b.KeychainAccount, b.KeychainService)
+func TestLookupBrowserRejectsDisallowedForks(t *testing.T) {
+	for _, name := range []string{"brave", "arc", "atlas", "chromium"} {
+		_, err := LookupBrowser(name)
+		if err == nil {
+			t.Fatalf("LookupBrowser(%q): expected error", name)
+		}
+		if !strings.Contains(err.Error(), "admitted sources are chrome and edge only") {
+			t.Errorf("LookupBrowser(%q) error = %v, want admitted-sources message", name, err)
+		}
 	}
 }
 
@@ -69,13 +68,11 @@ func TestLookupBrowserStandardForks(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	cases := []struct {
 		name       string
-		cookiesDir []string // path segments under Application Support (macOS), before profile
+		cookiesDir []string
 		account    string
 		service    string
 	}{
-		{"brave", []string{"BraveSoftware", "Brave-Browser"}, "Brave", "Brave Safe Storage"},
 		{"edge", []string{"Microsoft Edge"}, "Microsoft Edge", "Microsoft Edge Safe Storage"},
-		{"arc", []string{"Arc", "User Data"}, "Arc", "Arc Safe Storage"},
 	}
 	for _, tc := range cases {
 		b, err := LookupBrowser(tc.name)
@@ -101,7 +98,6 @@ func TestBrowserCookiesPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Chrome paths - OS-aware
 	var chromePath, chromeProfileDir, chromeLocalStorage, chromeIndexedDB string
 	if runtime.GOOS == "linux" {
 		chromePath = filepath.Join(base, "google-chrome", "Default", "Cookies")
@@ -126,39 +122,5 @@ func TestBrowserCookiesPath(t *testing.T) {
 	}
 	if got := chromeBrowser.IndexedDBDir(""); got != chromeIndexedDB {
 		t.Errorf("chrome default indexeddb path: got %q, want %q", got, chromeIndexedDB)
-	}
-
-	atlasBrowser, err := LookupBrowser("atlas")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Atlas paths - Atlas is macOS-only but the path helpers still work on Linux.
-	// On Linux, the macOS path segments are used directly since Atlas doesn't have
-	// a Linux-specific path mapping.
-	var atlasPath, atlasProfileDir, atlasLocalStorage, atlasIndexedDB string
-	if runtime.GOOS == "linux" {
-		atlasPath = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies")
-		atlasProfileDir = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1")
-		atlasLocalStorage = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "Local Storage", "leveldb")
-		atlasIndexedDB = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "IndexedDB")
-	} else {
-		atlasPath = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "Cookies")
-		atlasProfileDir = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1")
-		atlasLocalStorage = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "Local Storage", "leveldb")
-		atlasIndexedDB = filepath.Join(base, "com.openai.atlas", "browser-data", "host", "Profile 1", "IndexedDB")
-	}
-
-	if got := atlasBrowser.CookiesPath("Profile 1"); got != atlasPath {
-		t.Errorf("atlas profile path: got %q, want %q", got, atlasPath)
-	}
-	if got := atlasBrowser.ProfileDir("Profile 1"); got != atlasProfileDir {
-		t.Errorf("atlas profile dir: got %q, want %q", got, atlasProfileDir)
-	}
-	if got := atlasBrowser.LocalStorageLevelDB("Profile 1"); got != atlasLocalStorage {
-		t.Errorf("atlas local storage path: got %q, want %q", got, atlasLocalStorage)
-	}
-	if got := atlasBrowser.IndexedDBDir("Profile 1"); got != atlasIndexedDB {
-		t.Errorf("atlas indexeddb path: got %q, want %q", got, atlasIndexedDB)
 	}
 }

@@ -174,15 +174,15 @@ func TestSafeStorageRemediationForChromeUsesWizard(t *testing.T) {
 }
 
 func TestSafeStorageRemediationForNonChromeAvoidsChromeWizard(t *testing.T) {
-	b, err := LookupBrowser("atlas")
+	b, err := LookupBrowser("edge")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := safeStorageRemediationFor(b)
-	if !strings.Contains(got, `grant agentcookie read access to the "Atlas Safe Storage" Keychain item`) {
-		t.Errorf("atlas remediation should name the Atlas Keychain item: %q", got)
+	if !strings.Contains(got, `grant agentcookie read access to the "Microsoft Edge Safe Storage" Keychain item`) {
+		t.Errorf("edge remediation should name the Edge Keychain item: %q", got)
 	}
 	if strings.Contains(got, "AGENTCOOKIE_LOGIN_PASSWORD") {
-		t.Errorf("atlas remediation must not point at Chrome wizard env flow: %q", got)
+		t.Errorf("edge remediation must not point at Chrome wizard env flow: %q", got)
 	}
 }

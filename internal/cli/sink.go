@@ -733,7 +733,7 @@ func unionCookiesWithExtraProfiles(envelopeCookies []chrome.Cookie, profileDir s
 	}
 
 	// Discover extra Chrome profiles on this machine.
-	discovery := chromepaths.DiscoverForConfig(profileDir)
+	discovery := chromepaths.DiscoverForSource(profileDir, "")
 
 	// Group stores by browser to reuse decryption keys.
 	browserStores := make(map[string][]chromepaths.Store)

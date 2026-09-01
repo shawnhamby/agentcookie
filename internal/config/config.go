@@ -147,10 +147,7 @@ const (
 // keychain strings and per-browser notes.
 var sourceBrowserPaths = map[string]browserPathRef{
 	defaultBrowserName: {SupportDir: []string{"Google", "Chrome"}},
-	"atlas":            {SupportDir: []string{"com.openai.atlas", "browser-data", "host"}},
-	"brave":            {SupportDir: []string{"BraveSoftware", "Brave-Browser"}},
 	"edge":             {SupportDir: []string{"Microsoft Edge"}},
-	"arc":              {SupportDir: []string{"Arc", "User Data"}},
 }
 
 // SecurityRef holds transport credentials. SharedSecret is the pre-pairing
@@ -385,14 +382,8 @@ func linuxSupportDir(macDirs []string) []string {
 		return macDirs
 	case "Chromium":
 		return []string{"chromium"}
-	case "BraveSoftware":
-		return macDirs // Same structure on Linux
 	case "Microsoft Edge":
 		return []string{"microsoft-edge"}
-	case "com.openai.atlas":
-		return macDirs // Atlas is macOS-only
-	case "Arc":
-		return macDirs // Arc is macOS-only
 	default:
 		return macDirs
 	}
@@ -402,6 +393,10 @@ func lookupSourceBrowserPath(name string) (browserPathRef, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		key = defaultBrowserName
+	}
+	switch key {
+	case "brave", "arc", "atlas", "chromium":
+		return browserPathRef{}, fmt.Errorf("browser %q is not supported: admitted sources are chrome and edge only", name)
 	}
 	ref, ok := sourceBrowserPaths[key]
 	if !ok {

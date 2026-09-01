@@ -11,11 +11,9 @@ import (
 	"time"
 )
 
-// FindChrome locates the Google Chrome (or Chromium) executable. macOS app
-// bundles first (the agentcookie target platform), then PATH. The owned
-// browser must be REAL Chrome -- it shares the user's "Chrome Safe Storage"
-// Keychain item only within the same install, and matching the source
-// browser keeps cookie semantics consistent.
+// FindChrome locates the Google Chrome executable. macOS app bundles first
+// (the agentcookie target platform), then PATH. The owned browser must be
+// real Chrome -- Brave, Arc, and generic Chromium are not admitted.
 func FindChrome() (string, error) {
 	var candidates []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -23,14 +21,13 @@ func FindChrome() (string, error) {
 	}
 	candidates = append(candidates,
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 	)
 	for _, c := range candidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
 			return c, nil
 		}
 	}
-	for _, name := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser"} {
+	for _, name := range []string{"google-chrome", "google-chrome-stable"} {
 		if p, err := exec.LookPath(name); err == nil {
 			return p, nil
 		}

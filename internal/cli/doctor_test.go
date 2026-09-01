@@ -612,14 +612,14 @@ func TestCheckSourceAdapter(t *testing.T) {
 	t.Run("ok reports adapter", func(t *testing.T) {
 		cfg := &config.SourceConfig{
 			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
-			Browser: config.BrowserRef{Name: "atlas"},
+			Browser: config.BrowserRef{Name: "edge"},
 		}
 		c := checkSourceAdapter(cfg, exists, password, decryptOK)
 		if c.Severity != SeverityOK {
 			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
 		}
-		if !strings.Contains(c.Detail, "adapter: atlas") {
-			t.Errorf("detail should name atlas adapter: %q", c.Detail)
+		if !strings.Contains(c.Detail, "adapter: edge") {
+			t.Errorf("detail should name edge adapter: %q", c.Detail)
 		}
 	})
 
@@ -650,7 +650,7 @@ func TestCheckSourceAdapter(t *testing.T) {
 	t.Run("decrypt failure uses requested unsupported shape", func(t *testing.T) {
 		cfg := &config.SourceConfig{
 			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
-			Browser: config.BrowserRef{Name: "atlas"},
+			Browser: config.BrowserRef{Name: "edge"},
 		}
 		c := checkSourceAdapter(cfg, exists, password, func(string, []byte) error {
 			return errors.New("bad prefix")
@@ -658,7 +658,7 @@ func TestCheckSourceAdapter(t *testing.T) {
 		if c.Severity != SeverityFail {
 			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
 		}
-		if c.Detail != "adapter: atlas - decryption: unsupported on this build" {
+		if c.Detail != "adapter: edge - decryption: unsupported on this build" {
 			t.Errorf("detail: got %q", c.Detail)
 		}
 	})

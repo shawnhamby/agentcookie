@@ -137,7 +137,7 @@ func collectDomainCookiesFromChrome(domain string, matcher *protocol.BlocklistMa
 	bare := strings.TrimPrefix(domain, ".")
 	hostPattern := "%" + bare
 
-	discovery := chromepaths.DiscoverForConfig(profileDir)
+	discovery := chromepaths.DiscoverForSource(profileDir, "")
 
 	// Group stores by browser to reuse decryption keys.
 	browserStores := make(map[string][]chromepaths.Store)

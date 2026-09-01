@@ -114,7 +114,7 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 	Version = "1.2.3-test"
 	t.Cleanup(func() { Version = oldVersion })
 
-	cfg := &config.SourceConfig{Browser: config.BrowserRef{Name: "brave"}}
+	cfg := &config.SourceConfig{Browser: config.BrowserRef{Name: "edge"}}
 	blocklist := &config.Blocklist{Version: 1, Policy: config.CookiePolicyAllowlist}
 	var output bytes.Buffer
 	if err := writeAgentSyncCapabilities(&output, agentSyncCmd, cfg, blocklist); err != nil {
@@ -128,8 +128,8 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 	if got.SchemaVersion != 1 {
 		t.Errorf("schema_version = %d, want 1", got.SchemaVersion)
 	}
-	if got.EffectiveBrowserDefault != "brave" {
-		t.Errorf("effective_browser_default = %q, want brave", got.EffectiveBrowserDefault)
+	if got.EffectiveBrowserDefault != "edge" {
+		t.Errorf("effective_browser_default = %q, want edge", got.EffectiveBrowserDefault)
 	}
 	if got.PolicyMode != "allowlist" {
 		t.Errorf("policy_mode = %q, want allowlist", got.PolicyMode)

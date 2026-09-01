@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -527,15 +528,16 @@ func TestBrowserForRoot(t *testing.T) {
 		want string
 	}{
 		{"/Users/me/Library/Application Support/Google/Chrome", "chrome"},
-		{"/Users/me/Library/Application Support/Chromium", "chromium"},
-		{"/Users/me/Library/Application Support/BraveSoftware/Brave-Browser", "brave"},
+		{"/Users/me/Library/Application Support/Chromium", ""},
+		{"/Users/me/Library/Application Support/BraveSoftware/Brave-Browser", ""},
 		{"/Users/me/Library/Application Support/Microsoft Edge", "edge"},
+		{"/Users/me/Library/Application Support/Arc/User Data", ""},
 		{"/home/me/.config/google-chrome", "chrome"},
-		{"/home/me/.config/chromium", "chromium"},
-		{"/home/me/.config/BraveSoftware/Brave-Browser", "brave"},
+		{"/home/me/.config/chromium", ""},
+		{"/home/me/.config/BraveSoftware/Brave-Browser", ""},
 		{"/home/me/.config/microsoft-edge", "edge"},
 		{"/home/me/chrome-profile", "chrome"},
-		{"/some/random/path", "chrome"}, // Default
+		{"/some/random/path", "chrome"},
 	}
 
 	for _, tc := range cases {
@@ -543,5 +545,83 @@ func TestBrowserForRoot(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("browserForRoot(%q) = %q, want %q", tc.root, got, tc.want)
 		}
+	}
+}
+
+func TestDiscover_DoesNotScanBraveOrChromiumRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var appSupport string
+	if runtime.GOOS == "darwin" {
+		appSupport = filepath.Join(home, "Library", "Application Support")
+	} else {
+		appSupport = filepath.Join(home, ".config")
+	}
+
+	braveRoot := filepath.Join(appSupport, "BraveSoftware", "Brave-Browser")
+	if runtime.GOOS == "linux" {
+		braveRoot = filepath.Join(appSupport, "BraveSoftware", "Brave-Browser")
+	}
+	chromiumRoot := filepath.Join(appSupport, "Chromium")
+	if runtime.GOOS == "linux" {
+		chromiumRoot = filepath.Join(appSupport, "chromium")
+	}
+
+	for _, root := range []string{braveRoot, chromiumRoot} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		makeProfile(t, root, "Default", true, false)
+	}
+
+	result := Discover()
+	for _, s := range result.Stores {
+		if strings.Contains(strings.ToLower(s.Root), "brave") || strings.Contains(strings.ToLower(s.Root), "chromium") {
+			t.Fatalf("Discover scanned disallowed root: %+v", s)
+		}
+	}
+}
+
+func TestDiscoverForSource_HonorsBrowserScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var chromeRoot, edgeRoot string
+	if runtime.GOOS == "darwin" {
+		appSupport := filepath.Join(home, "Library", "Application Support")
+		chromeRoot = filepath.Join(appSupport, "Google", "Chrome")
+		edgeRoot = filepath.Join(appSupport, "Microsoft Edge")
+	} else {
+		configDir := filepath.Join(home, ".config")
+		chromeRoot = filepath.Join(configDir, "google-chrome")
+		edgeRoot = filepath.Join(configDir, "microsoft-edge")
+	}
+
+	for _, root := range []string{chromeRoot, edgeRoot} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		makeProfile(t, root, "Default", true, false)
+	}
+
+	edgeOnly := DiscoverForSource("", "edge")
+	for _, s := range edgeOnly.Stores {
+		if s.Browser != "edge" {
+			t.Fatalf("edge-scoped discovery included %q store: %+v", s.Browser, s)
+		}
+	}
+	if len(edgeOnly.Stores) == 0 {
+		t.Fatal("expected edge store when scoped to edge")
+	}
+
+	chromeOnly := DiscoverForSource("", "chrome")
+	for _, s := range chromeOnly.Stores {
+		if s.Browser != "chrome" {
+			t.Fatalf("chrome-scoped discovery included %q store: %+v", s.Browser, s)
+		}
+	}
+	if len(chromeOnly.Stores) == 0 {
+		t.Fatal("expected chrome store when scoped to chrome")
 	}
 }
