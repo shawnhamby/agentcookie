@@ -722,6 +722,9 @@ func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
 		{braveRoot, "Default"},
 		{chromeRoot, "Default"},
 		{edgeRoot, "Profile 2"},
+		{edgeRoot, "Guest Profile"},
+		{chromeRoot, "Guest Profile"},
+		{chromeRoot, "System Profile"},
 	} {
 		profileDir := filepath.Join(spec.root, spec.profile)
 		networkDir := filepath.Join(profileDir, "Network")
@@ -746,6 +749,12 @@ func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
 	c := checkChromeStoresWith("", lookup, passwordFor)
 	if strings.Contains(strings.ToLower(c.Detail), "brave") {
 		t.Fatalf("doctor detail mentions Brave: %q", c.Detail)
+	}
+	if strings.Contains(c.Detail, "Guest") {
+		t.Fatalf("doctor detail mentions Guest: %q", c.Detail)
+	}
+	if strings.Contains(c.Detail, "System Profile") {
+		t.Fatalf("doctor detail mentions System Profile: %q", c.Detail)
 	}
 	for _, svc := range keychainServices {
 		if strings.Contains(strings.ToLower(svc), "brave") {

@@ -57,13 +57,28 @@ type DiscoverResult struct {
 	Skipped []SkippedStore
 }
 
-// profileNameAllowlist matches profile directory names that are actual
-// Chrome profiles, not cache/crash dirs. Patterns:
-//   - Default
-//   - Profile N (where N is a number)
-//   - Guest Profile
-//   - System Profile
+// profileNameAllowlist matches Chromium profile directory names so they are
+// never mistaken for a user-data-dir. Matching is not admission: Guest,
+// System, and extra Profile N dirs are recognized and ignored.
 var profileNameAllowlist = regexp.MustCompile(`^(Default|Profile \d+|Guest Profile|System Profile)$`)
+
+const (
+	admittedChromeProfile = "Default"   // Personal
+	admittedEdgeProfile   = "Profile 2" // School / WSU research
+)
+
+// isAdmittedStore reports whether browser+profile is a first-class source.
+// Guest Profile, System Profile, and other Profile N dirs are never stores.
+func isAdmittedStore(browser, profile string) bool {
+	switch browser {
+	case "chrome":
+		return profile == admittedChromeProfile
+	case "edge":
+		return profile == admittedEdgeProfile
+	default:
+		return false
+	}
+}
 
 // skipDirs are directory names that should never be treated as profiles.
 var skipDirs = map[string]bool{
@@ -239,38 +254,11 @@ func DiscoverWithOptions(opts DiscoverOptions) DiscoverResult {
 
 			// Check if this looks like a profile directory.
 			if !profileNameAllowlist.MatchString(name) {
-				// For well-known agent roots (chrome-profile, agentcookie/chrome-profile),
-				// the root itself is the profile (not a subdirectory).
-				// We'll handle these specially below.
 				continue
 			}
 
 			profileDir := filepath.Join(root, name)
-			store, skipReason := probeProfileDir(root, name, profileDir, browser, isDefaultRoot && name == "Default")
-			if skipReason != "" {
-				result.Skipped = append(result.Skipped, SkippedStore{
-					Root:    root,
-					Profile: name,
-					Reason:  skipReason,
-				})
-			} else if store != nil {
-				result.Stores = append(result.Stores, *store)
-			}
-		}
-
-		// For well-known agent roots that are themselves profiles (the root
-		// IS the profile, no subdirectory), probe the root directly.
-		if strings.HasSuffix(root, "chrome-profile") {
-			store, skipReason := probeProfileDir(filepath.Dir(root), filepath.Base(root), root, browser, false)
-			if skipReason != "" {
-				result.Skipped = append(result.Skipped, SkippedStore{
-					Root:    filepath.Dir(root),
-					Profile: filepath.Base(root),
-					Reason:  skipReason,
-				})
-			} else if store != nil {
-				result.Stores = append(result.Stores, *store)
-			}
+			addStoreIfAdmitted(&result, root, name, profileDir, browser, isDefaultRoot && name == "Default")
 		}
 	}
 
@@ -364,22 +352,7 @@ func mergeExplicitProfileDir(profileDir string, result *DiscoverResult) {
 		return
 	}
 	if addedFromChildren := scanUserDataDir(abs, result); !addedFromChildren {
-		store, skipReason := probeProfileDir(
-			filepath.Dir(abs),
-			filepath.Base(abs),
-			abs,
-			browser,
-			false,
-		)
-		if skipReason != "" {
-			result.Skipped = append(result.Skipped, SkippedStore{
-				Root:    filepath.Dir(abs),
-				Profile: filepath.Base(abs),
-				Reason:  skipReason,
-			})
-		} else if store != nil {
-			result.Stores = append(result.Stores, *store)
-		}
+		addStoreIfAdmitted(result, filepath.Dir(abs), filepath.Base(abs), abs, browser, false)
 	}
 }
 
@@ -414,17 +387,27 @@ func scanUserDataDir(root string, result *DiscoverResult) bool {
 
 		foundProfiles = true
 		profileDir := filepath.Join(root, name)
-		store, skipReason := probeProfileDir(root, name, profileDir, browser, name == "Default")
-		if skipReason != "" {
-			result.Skipped = append(result.Skipped, SkippedStore{
-				Root:    root,
-				Profile: name,
-				Reason:  skipReason,
-			})
-		} else if store != nil {
-			result.Stores = append(result.Stores, *store)
-		}
+		addStoreIfAdmitted(result, root, name, profileDir, browser, name == "Default")
 	}
 
 	return foundProfiles
+}
+
+// addStoreIfAdmitted probes Cookies only for admitted browser+profile pairs.
+// Guest and other extra profiles are ignored, not skipped, so doctor never
+// Keychain-probes them.
+func addStoreIfAdmitted(result *DiscoverResult, root, name, profileDir, browser string, isDefault bool) {
+	if !isAdmittedStore(browser, name) {
+		return
+	}
+	store, skipReason := probeProfileDir(root, name, profileDir, browser, isDefault)
+	if skipReason != "" {
+		result.Skipped = append(result.Skipped, SkippedStore{
+			Root:    root,
+			Profile: name,
+			Reason:  skipReason,
+		})
+	} else if store != nil {
+		result.Stores = append(result.Stores, *store)
+	}
 }

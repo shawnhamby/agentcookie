@@ -168,18 +168,28 @@ func TestDiscover_MultipleProfiles(t *testing.T) {
 
 	result := Discover()
 
-	if len(result.Stores) != 4 {
-		t.Errorf("expected 4 stores, got %d", len(result.Stores))
+	if len(result.Stores) != 1 {
+		t.Errorf("expected 1 admitted store (Chrome Default), got %d", len(result.Stores))
 	}
 
 	profiles := make(map[string]bool)
 	for _, s := range result.Stores {
 		profiles[s.Profile] = true
+		if s.Profile != "Default" || s.Browser != "chrome" {
+			t.Errorf("unexpected store: %+v", s)
+		}
 	}
-
-	for _, want := range []string{"Default", "Profile 1", "Profile 2", "Guest Profile"} {
-		if !profiles[want] {
-			t.Errorf("missing profile: %s", want)
+	if !profiles["Default"] {
+		t.Error("missing admitted Chrome Default")
+	}
+	for _, extra := range []string{"Profile 1", "Profile 2", "Guest Profile"} {
+		if profiles[extra] {
+			t.Errorf("extra profile %s must not be a store", extra)
+		}
+	}
+	for _, s := range result.Skipped {
+		if s.Profile == "Guest Profile" {
+			t.Error("Guest Profile must not appear in Skipped")
 		}
 	}
 }
@@ -241,13 +251,13 @@ func TestDiscover_AgentChromeProfile(t *testing.T) {
 
 	found := false
 	for _, s := range result.Stores {
-		if s.Profile == "chrome-profile" && !s.IsDefault {
+		if s.Profile == "chrome-profile" {
 			found = true
 			break
 		}
 	}
-	if !found {
-		t.Error("~/chrome-profile should be discovered as a store")
+	if found {
+		t.Error("~/chrome-profile must not be an admitted store")
 	}
 }
 
@@ -269,13 +279,13 @@ func TestDiscover_AgentCookieChromeProfile(t *testing.T) {
 
 	found := false
 	for _, s := range result.Stores {
-		if s.Profile == "chrome-profile" && !s.IsDefault {
+		if s.Profile == "chrome-profile" {
 			found = true
 			break
 		}
 	}
-	if !found {
-		t.Error("~/.agentcookie/chrome-profile should be discovered as a store")
+	if found {
+		t.Error("~/.agentcookie/chrome-profile must not be an admitted store")
 	}
 }
 
@@ -345,7 +355,7 @@ func TestDiscover_NoLocalStateRequired(t *testing.T) {
 	}
 }
 
-func TestDiscoverForConfig_AddsExplicitProfileDir(t *testing.T) {
+func TestDiscoverForConfig_RejectsBareNonAdmittedProfileDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -368,8 +378,32 @@ func TestDiscoverForConfig_AddsExplicitProfileDir(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Error("explicit profile dir should be in discovery result")
+	if found {
+		t.Error("bare non-admitted profile dir must not become a store")
+	}
+}
+
+func TestIsAdmittedStore(t *testing.T) {
+	cases := []struct {
+		browser, profile string
+		want            bool
+	}{
+		{"chrome", "Default", true},
+		{"edge", "Profile 2", true},
+		{"chrome", "Profile 2", false},
+		{"edge", "Default", false},
+		{"edge", "Guest Profile", false},
+		{"chrome", "Guest Profile", false},
+		{"chrome", "System Profile", false},
+		{"edge", "System Profile", false},
+		{"brave", "Default", false},
+		{"chrome", "chrome-profile", false},
+	}
+	for _, tc := range cases {
+		got := isAdmittedStore(tc.browser, tc.profile)
+		if got != tc.want {
+			t.Errorf("isAdmittedStore(%q, %q) = %v, want %v", tc.browser, tc.profile, got, tc.want)
+		}
 	}
 }
 
@@ -433,9 +467,7 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 
 	result := DiscoverForConfig(userDataDir)
 
-	// Should find both Default and Profile 1.
 	foundDefault := false
-	foundProfile1 := false
 	for _, s := range result.Stores {
 		if s.Root == userDataDir && s.Profile == "Default" && s.CookiesPath == defaultCookies {
 			foundDefault = true
@@ -443,15 +475,12 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 				t.Error("Default profile should have IsDefault=true")
 			}
 		}
-		if s.Root == userDataDir && s.Profile == "Profile 1" && s.CookiesPath == profile1Cookies {
-			foundProfile1 = true
+		if s.Profile == "Profile 1" {
+			t.Errorf("Profile 1 must not be an admitted store: %+v", s)
 		}
 	}
 	if !foundDefault {
 		t.Error("Default profile should be discovered from user-data-dir")
-	}
-	if !foundProfile1 {
-		t.Error("Profile 1 should be discovered from user-data-dir")
 	}
 }
 
@@ -602,8 +631,10 @@ func TestDiscoverForSource_HonorsBrowserScope(t *testing.T) {
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		makeProfile(t, root, "Default", true, false)
 	}
+	makeProfile(t, chromeRoot, "Default", true, false)
+	makeProfile(t, edgeRoot, "Profile 2", true, false)
+	makeProfile(t, edgeRoot, "Guest Profile", true, false)
 
 	edgeOnly := DiscoverForSource("", "edge")
 	for _, s := range edgeOnly.Stores {
@@ -611,8 +642,8 @@ func TestDiscoverForSource_HonorsBrowserScope(t *testing.T) {
 			t.Fatalf("edge-scoped discovery included %q store: %+v", s.Browser, s)
 		}
 	}
-	if len(edgeOnly.Stores) == 0 {
-		t.Fatal("expected edge store when scoped to edge")
+	if len(edgeOnly.Stores) != 1 || edgeOnly.Stores[0].Profile != "Profile 2" {
+		t.Fatalf("expected only edge/Profile 2, got %+v", edgeOnly.Stores)
 	}
 
 	chromeOnly := DiscoverForSource("", "chrome")
