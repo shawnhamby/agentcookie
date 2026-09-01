@@ -209,9 +209,9 @@ func ProductEnabled(name string, enabled []string) bool {
 }
 
 // EnabledProfileForBrowser returns the profile directory for a single-store
-// command (agent-sync, cmux-sync). When source.yaml names the same browser,
-// its profile wins; otherwise Chromium's Default profile is used. Product
-// enablement and multi-profile merge are owned by enabled_products + export.
+// pin (agent-sync --browser/--profile, cmux-sync). When source.yaml names the
+// same browser, its profile wins; otherwise Chromium's Default profile is used.
+// Default agent-sync injects the merged enabled_products set like export.
 func EnabledProfileForBrowser(name string, cfg *SourceConfig) string {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {

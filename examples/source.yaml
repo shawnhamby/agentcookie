@@ -9,8 +9,9 @@ sink:
 
 chrome:
   # Defaults to ~/Library/Application Support/Google/Chrome/Default/Cookies
-  # if omitted. Used by single-store commands (agent-sync); default export
-  # merges all user profiles of enabled_products instead.
+  # if omitted. Used when agent-sync or cmux-sync pin one store via
+  # --browser/--profile; default agent-sync and export merge all user profiles
+  # of enabled_products instead.
   db_path: ~/Library/Application Support/Google/Chrome/Default/Cookies
 
 # Ordered list of browser products whose user profiles are discovered and
@@ -21,8 +22,10 @@ chrome:
 #   - chrome
 #   - edge
 
-# Optional single-store browser pin for agent-sync / cmux-sync. Omit for
-# Google Chrome Default. Supported: chrome, edge.
+# Optional single-store pin for agent-sync / cmux-sync via --browser and/or
+# --profile. Omit both flags on agent-sync to inject the merged
+# enabled_products set (same precedence as export). Supported browsers:
+# chrome, edge.
 # browser:
 #   name: edge # chrome | edge
 #   profile: Profile 2

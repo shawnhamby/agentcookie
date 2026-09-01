@@ -117,6 +117,8 @@ func runExport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+type decryptKeyFunc func(browser string) ([]byte, error)
+
 // readMergedExportCookies discovers stores for enabled products, decrypts each
 // user profile, and merges with first-wins precedence following product order
 // then Default-before-other profiles. Per-store decrypt failures are skipped
@@ -126,8 +128,14 @@ func readMergedExportCookies(enabled []string, blocklist *config.Blocklist, skip
 	if len(discovery.Stores) == 0 {
 		return nil, readStats{}, fmt.Errorf("export: no cookie stores found for enabled products %s", strings.Join(enabled, ", "))
 	}
-
 	stores := sortStoresForMerge(discovery.Stores, enabled)
+	return readMergedCookiesFromStores(stores, blocklist, skipDBSC, now, getChromeDecryptKey)
+}
+
+// readMergedCookiesFromStores merges cookies from the given stores using the
+// export first-wins rules. keyFn supplies per-browser decrypt keys; per-store
+// read failures are skipped so one locked profile does not fail the merge.
+func readMergedCookiesFromStores(stores []chromepaths.Store, blocklist *config.Blocklist, skipDBSC bool, now time.Time, keyFn decryptKeyFunc) ([]chrome.Cookie, readStats, error) {
 	var merged []chrome.Cookie
 	var st readStats
 	st.droppedHosts = map[string]int{}
@@ -137,7 +145,7 @@ func readMergedExportCookies(enabled []string, blocklist *config.Blocklist, skip
 	for _, store := range stores {
 		key, ok := keys[store.Browser]
 		if !ok {
-			derived, err := getChromeDecryptKey(store.Browser)
+			derived, err := keyFn(store.Browser)
 			if err != nil {
 				readErrs = append(readErrs, store.Browser+"/"+store.Profile+": "+err.Error())
 				continue

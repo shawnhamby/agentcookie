@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/livecdp"
-	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 	"github.com/mvanhorn/agentcookie/internal/watcher"
 )
 
@@ -47,6 +47,7 @@ var (
 	agentSyncWindowSize       string
 	agentSyncRequirePolicy    string
 	agentSyncCapabilitiesJSON bool
+	agentSyncProxyServer      string
 )
 
 var agentSyncCmd = &cobra.Command{
@@ -84,12 +85,13 @@ func init() {
 	agentSyncCmd.Flags().StringVar(&agentSyncUserDataDir, "user-data-dir", "", "owned-browser profile dir (default: ~/.agentcookie/agent-chrome, or agent-chrome-<port> for non-default ports)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC); also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
 	agentSyncCmd.Flags().StringSliceVar(&agentSyncDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com")
-	agentSyncCmd.Flags().StringVar(&agentSyncBrowser, "browser", "", "source browser name (default: source.yaml browser, then Chrome)")
-	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "source browser profile dir name (default: source.yaml profile when the browser matches source.yaml, else the browser's default profile)")
+	agentSyncCmd.Flags().StringVar(&agentSyncBrowser, "browser", "", "pin to one source browser store (default: merge all enabled_products like export)")
+	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "pin to one source profile dir (requires single-store pin with --browser or alone)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
 	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
 	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; default: Chrome's 800x600 headless)")
 	agentSyncCmd.Flags().StringVar(&agentSyncRequirePolicy, "require-policy", "", `refuse to start or sync unless this cookie policy is active (supported: "allowlist")`)
+	agentSyncCmd.Flags().StringVar(&agentSyncProxyServer, "proxy-server", "", "HTTP/HTTPS/SOCKS proxy URL for the owned Chrome (explicit flag only; credentials are never logged)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncCapabilitiesJSON, "capabilities-json", false, "print the agent-sync capability contract as JSON and exit")
 }
 
@@ -117,29 +119,45 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	if browserName == "" {
 		browserName = cfg.Browser.Name
 	}
-	sourceBrowser, err := chrome.LookupBrowser(browserName)
-	if err != nil {
-		return err
-	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+
+	var key []byte
+	var watchPaths []string
+	pinned := agentSyncSourcePinned(agentSyncBrowser, agentSyncProfile)
+	if pinned {
+		sourceBrowser, err := chrome.LookupBrowser(browserName)
+		if err != nil {
+			return err
+		}
+		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+		if err != nil {
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
+		dbPath, err := resolveSourceDBPath(cfg, agentSyncBrowser, agentSyncProfile, browserName)
+		if err != nil {
+			return err
+		}
+		watchPaths = []string{dbPath}
+	} else {
+		enabled, err := config.ResolveEnabledProducts(cfg)
+		if err != nil {
+			return err
+		}
+		watchPaths, err = discoverAgentSyncWatchPaths(enabled)
+		if err != nil {
+			return err
+		}
 	}
 
-	dbPath, err := resolveSourceDBPath(cfg, agentSyncBrowser, agentSyncProfile, browserName)
-	if err != nil {
-		return err
-	}
 	skipDBSC := agentSyncSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
 	domainFilter := agentSyncDomains
 
 	// Cookie provider: read+decrypt+filter fresh each call so the loop always
 	// injects current values.
-	provider := newAgentSyncCookieProvider(dbPath, key, skipDBSC, domainFilter, requiredPolicy)
+	provider := newAgentSyncCookieProvider(cfg, key, skipDBSC, domainFilter, requiredPolicy, agentSyncBrowser, agentSyncProfile)
 
 	userDataDir := agentSyncUserDataDir
 	if userDataDir == "" {
@@ -160,7 +178,16 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	oc, err := livecdp.LaunchOwnedChrome(ctx, agentSyncChromePath, userDataDir, agentSyncPort, !agentSyncHeaded, agentSyncUserAgent, agentSyncWindowSize)
+	oc, err := livecdp.LaunchOwnedChromeWithOptions(ctx, livecdp.LaunchOptions{
+		ChromePath:  agentSyncChromePath,
+		UserDataDir: userDataDir,
+		Port:        agentSyncPort,
+		Headless:    !agentSyncHeaded,
+		UserAgent:   agentSyncUserAgent,
+		WindowSize:  agentSyncWindowSize,
+		ProxyServer: agentSyncProxyServer,
+		LeanProfile: true,
+	})
 	if err != nil {
 		return err
 	}
@@ -189,6 +216,9 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: "+format+"\n", a...)
 		}
 	}
+	if agentSyncVerbose && agentSyncProxyServer != "" {
+		syncLog("proxy-server %s", livecdp.RedactProxyURL(agentSyncProxyServer))
+	}
 	syncer := livecdp.NewSyncer(ctx, browser, provider, syncLog)
 
 	// Initial inject so the owned browser's default context is logged in
@@ -212,26 +242,19 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// Watch the source Chrome cookie DB; on each debounced change, re-inject
+	// Watch the source cookie DB(s); on each debounced change, re-inject
 	// current cookies into every live context so a site the user just logged
 	// into in their real Chrome becomes logged-in in the agent browser too.
 	// A failed cycle is logged and the watcher keeps running.
-	w, err := watcher.New(watcher.Config{
-		CookiesPath: dbPath,
-		LogLabel:    "agentcookie agent-sync",
-		Push: func(context.Context) (int, error) {
-			return syncer.ReinjectAll()
-		},
-		OnEvent: func(ev watcher.Event) {
-			if agentSyncVerbose {
-				fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
-			}
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("init watcher: %w", err)
+	push := func(context.Context) (int, error) {
+		return syncer.ReinjectAll()
 	}
-	err = w.Run(ctx)
+	onEvent := func(ev watcher.Event) {
+		if agentSyncVerbose {
+			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: %s\n", ev.String())
+		}
+	}
+	err = runAgentSyncWatchers(ctx, watchPaths, push, onEvent)
 	if err != nil && err != context.Canceled {
 		return err
 	}
@@ -239,22 +262,73 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func newAgentSyncCookieProvider(dbPath string, key []byte, skipDBSC bool, domainFilter []string, requiredPolicy string) livecdp.CookieProvider {
+func newAgentSyncCookieProvider(cfg *config.SourceConfig, key []byte, skipDBSC bool, domainFilter []string, requiredPolicy, flagBrowser, flagProfile string) livecdp.CookieProvider {
 	return func() ([]chrome.Cookie, error) {
 		blocklist, err := loadRequiredAgentSyncPolicy(requiredPolicy)
 		if err != nil {
 			return nil, err
 		}
-		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
+		cookies, st, err := readAgentSyncCookies(cfg, flagBrowser, flagProfile, blocklist, key, skipDBSC, domainFilter, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
-		cookies = sinkpush.FilterByHostPatterns(cookies, domainFilter)
 		if agentSyncVerbose {
 			fmt.Fprintf(os.Stderr, "agentcookie agent-sync: read %d, filtered %d, dbsc(warn=%d skip=%d), injecting %d\n",
 				st.totalRead, st.totalDropped, st.dbsc.warned, st.dbsc.skipped, len(cookies))
 		}
 		return cookies, nil
+	}
+}
+
+func runAgentSyncWatchers(ctx context.Context, paths []string, push func(context.Context) (int, error), onEvent func(watcher.Event)) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("agent-sync: no cookie stores to watch")
+	}
+	if len(paths) == 1 {
+		w, err := watcher.New(watcher.Config{
+			CookiesPath: paths[0],
+			LogLabel:    "agentcookie agent-sync",
+			Push:        push,
+			OnEvent:     onEvent,
+		})
+		if err != nil {
+			return fmt.Errorf("init watcher: %w", err)
+		}
+		return w.Run(ctx)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(paths))
+	for _, path := range paths {
+		wg.Add(1)
+		go func(cookiesPath string) {
+			defer wg.Done()
+			w, err := watcher.New(watcher.Config{
+				CookiesPath: cookiesPath,
+				LogLabel:    "agentcookie agent-sync",
+				Push:        push,
+				OnEvent:     onEvent,
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("init watcher for %s: %w", cookiesPath, err)
+				cancel()
+				return
+			}
+			if err := w.Run(ctx); err != nil && err != context.Canceled {
+				errCh <- err
+				cancel()
+			}
+		}(path)
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
 	}
 }
 
