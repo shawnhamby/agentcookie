@@ -1,8 +1,7 @@
 // Package chromepaths centralizes the on-disk Chrome profile paths
 // agentcookie reads and writes. Supports macOS and Linux.
 //
-// v0.7 scope: Default profile only. Extra-profile discovery admits only
-// Chrome Default and Edge Profile 2.
+// Discovery returns only enabled sources: Chrome Default and Edge Profile 2.
 package chromepaths
 
 import (

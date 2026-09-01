@@ -85,7 +85,7 @@ security:
 	if err == nil {
 		t.Fatal("LoadSource with brave browser: expected error")
 	}
-	if !strings.Contains(err.Error(), "admitted sources are chrome and edge only") {
+	if !strings.Contains(err.Error(), "enabled sources are chrome and edge only") {
 		t.Fatalf("LoadSource error = %v", err)
 	}
 }
@@ -681,7 +681,7 @@ domains: []
 	}
 }
 
-func TestAdmittedProfileForBrowser(t *testing.T) {
+func TestEnabledProfileForBrowser(t *testing.T) {
 	edgeCfg := &SourceConfig{
 		Browser: BrowserRef{Name: "edge", Profile: "Profile 2"},
 	}
@@ -691,15 +691,15 @@ func TestAdmittedProfileForBrowser(t *testing.T) {
 		cfg     *SourceConfig
 		want    string
 	}{
-		{"chrome default", "chrome", nil, AdmittedChromeProfile},
-		{"edge default", "edge", nil, AdmittedEdgeProfile},
+		{"chrome default", "chrome", nil, EnabledChromeProfile},
+		{"edge default", "edge", nil, EnabledEdgeProfile},
 		{"source.yaml edge profile", "edge", edgeCfg, "Profile 2"},
-		{"chrome ignores edge source profile", "chrome", edgeCfg, AdmittedChromeProfile},
+		{"chrome ignores edge source profile", "chrome", edgeCfg, EnabledChromeProfile},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := AdmittedProfileForBrowser(tc.browser, tc.cfg); got != tc.want {
-				t.Fatalf("AdmittedProfileForBrowser(%q) = %q, want %q", tc.browser, got, tc.want)
+			if got := EnabledProfileForBrowser(tc.browser, tc.cfg); got != tc.want {
+				t.Fatalf("EnabledProfileForBrowser(%q) = %q, want %q", tc.browser, got, tc.want)
 			}
 		})
 	}

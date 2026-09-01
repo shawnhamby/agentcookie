@@ -169,7 +169,7 @@ func TestDiscover_MultipleProfiles(t *testing.T) {
 	result := Discover()
 
 	if len(result.Stores) != 1 {
-		t.Errorf("expected 1 admitted store (Chrome Default), got %d", len(result.Stores))
+		t.Errorf("expected 1 enabled store (Chrome Default), got %d", len(result.Stores))
 	}
 
 	profiles := make(map[string]bool)
@@ -180,16 +180,16 @@ func TestDiscover_MultipleProfiles(t *testing.T) {
 		}
 	}
 	if !profiles["Default"] {
-		t.Error("missing admitted Chrome Default")
+		t.Error("missing enabled Chrome Default")
 	}
 	for _, extra := range []string{"Profile 1", "Profile 2", "Guest Profile"} {
 		if profiles[extra] {
-			t.Errorf("extra profile %s must not be a store", extra)
+			t.Errorf("non-enabled profile %s must not be a store", extra)
 		}
 	}
 	for _, s := range result.Skipped {
-		if s.Profile == "Guest Profile" {
-			t.Error("Guest Profile must not appear in Skipped")
+		if !isEnabledStore("chrome", s.Profile) {
+			t.Errorf("non-enabled profile %q must not appear in Skipped", s.Profile)
 		}
 	}
 }
@@ -257,7 +257,7 @@ func TestDiscover_AgentChromeProfile(t *testing.T) {
 		}
 	}
 	if found {
-		t.Error("~/chrome-profile must not be an admitted store")
+		t.Error("~/chrome-profile is not an enabled source")
 	}
 }
 
@@ -285,7 +285,7 @@ func TestDiscover_AgentCookieChromeProfile(t *testing.T) {
 		}
 	}
 	if found {
-		t.Error("~/.agentcookie/chrome-profile must not be an admitted store")
+		t.Error("~/.agentcookie/chrome-profile is not an enabled source")
 	}
 }
 
@@ -301,15 +301,10 @@ func TestDiscover_ChromeUserDataDirEnv(t *testing.T) {
 
 	result := Discover()
 
-	found := false
 	for _, s := range result.Stores {
-		if s.Root == customRoot && s.Profile == "Default" {
-			found = true
-			break
+		if s.Root == customRoot {
+			t.Fatalf("CHROME_USER_DATA_DIR is not an enabled source: %+v", s)
 		}
-	}
-	if !found {
-		t.Error("CHROME_USER_DATA_DIR profile should be discovered")
 	}
 }
 
@@ -355,7 +350,7 @@ func TestDiscover_NoLocalStateRequired(t *testing.T) {
 	}
 }
 
-func TestDiscoverForConfig_RejectsBareNonAdmittedProfileDir(t *testing.T) {
+func TestDiscoverForConfig_RejectsBareNonEnabledProfileDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -379,11 +374,11 @@ func TestDiscoverForConfig_RejectsBareNonAdmittedProfileDir(t *testing.T) {
 		}
 	}
 	if found {
-		t.Error("bare non-admitted profile dir must not become a store")
+		t.Error("bare non-enabled profile dir must not become a store")
 	}
 }
 
-func TestIsAdmittedStore(t *testing.T) {
+func TestIsEnabledStore(t *testing.T) {
 	cases := []struct {
 		browser, profile string
 		want            bool
@@ -400,9 +395,9 @@ func TestIsAdmittedStore(t *testing.T) {
 		{"chrome", "chrome-profile", false},
 	}
 	for _, tc := range cases {
-		got := isAdmittedStore(tc.browser, tc.profile)
+		got := isEnabledStore(tc.browser, tc.profile)
 		if got != tc.want {
-			t.Errorf("isAdmittedStore(%q, %q) = %v, want %v", tc.browser, tc.profile, got, tc.want)
+			t.Errorf("isEnabledStore(%q, %q) = %v, want %v", tc.browser, tc.profile, got, tc.want)
 		}
 	}
 }
@@ -435,10 +430,13 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Create a user-data-dir with Default and Profile 1 subdirs (no Local State).
-	userDataDir := filepath.Join(t.TempDir(), "my-chrome-data")
+	var userDataDir string
+	if runtime.GOOS == "darwin" {
+		userDataDir = filepath.Join(home, "Library", "Application Support", "Google", "Chrome")
+	} else {
+		userDataDir = filepath.Join(home, ".config", "google-chrome")
+	}
 
-	// Default profile with Cookies.
 	defaultDir := filepath.Join(userDataDir, "Default")
 	if err := os.MkdirAll(defaultDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -448,18 +446,15 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Profile 1 with Network/Cookies.
 	profile1Dir := filepath.Join(userDataDir, "Profile 1")
 	networkDir := filepath.Join(profile1Dir, "Network")
 	if err := os.MkdirAll(networkDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profile1Cookies := filepath.Join(networkDir, "Cookies")
-	if err := os.WriteFile(profile1Cookies, []byte{}, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(networkDir, "Cookies"), []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Add a cache dir that should be skipped.
 	cacheDir := filepath.Join(userDataDir, "Cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -476,11 +471,11 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 			}
 		}
 		if s.Profile == "Profile 1" {
-			t.Errorf("Profile 1 must not be an admitted store: %+v", s)
+			t.Errorf("Profile 1 is not an enabled store: %+v", s)
 		}
 	}
 	if !foundDefault {
-		t.Error("Default profile should be discovered from user-data-dir")
+		t.Error("Default profile should be discovered from enabled Chrome user-data-dir")
 	}
 }
 
@@ -491,9 +486,15 @@ func TestDiscoverForConfig_ExpandsTilde(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Create a user-data-dir under HOME with Default/Cookies.
-	chromeProfile := filepath.Join(home, "chrome-profile")
-	defaultDir := filepath.Join(chromeProfile, "Default")
+	var chromeRoot, tildePath string
+	if runtime.GOOS == "darwin" {
+		chromeRoot = filepath.Join(home, "Library", "Application Support", "Google", "Chrome")
+		tildePath = "~/Library/Application Support/Google/Chrome"
+	} else {
+		chromeRoot = filepath.Join(home, ".config", "google-chrome")
+		tildePath = "~/.config/google-chrome"
+	}
+	defaultDir := filepath.Join(chromeRoot, "Default")
 	if err := os.MkdirAll(defaultDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -502,22 +503,21 @@ func TestDiscoverForConfig_ExpandsTilde(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Use tilde shorthand - this should expand to home/chrome-profile.
-	result := DiscoverForConfig("~/chrome-profile")
+	result := DiscoverForConfig(tildePath)
 
 	found := false
 	for _, s := range result.Stores {
-		if s.Root == chromeProfile && s.Profile == "Default" && s.CookiesPath == cookiesPath {
+		if s.Root == chromeRoot && s.Profile == "Default" && s.CookiesPath == cookiesPath {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("DiscoverForConfig(\"~/chrome-profile\") should find Default/Cookies under home")
+		t.Errorf("DiscoverForConfig(%q) should find enabled Chrome Default under home", tildePath)
 	}
 }
 
-func TestProfileNameAllowlist(t *testing.T) {
+func TestProfileDirName(t *testing.T) {
 	cases := []struct {
 		name    string
 		matches bool
@@ -544,9 +544,9 @@ func TestProfileNameAllowlist(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := profileNameAllowlist.MatchString(tc.name)
+		got := profileDirName.MatchString(tc.name)
 		if got != tc.matches {
-			t.Errorf("profileNameAllowlist.MatchString(%q) = %v, want %v", tc.name, got, tc.matches)
+			t.Errorf("profileDirName.MatchString(%q) = %v, want %v", tc.name, got, tc.matches)
 		}
 	}
 }
@@ -565,8 +565,8 @@ func TestBrowserForRoot(t *testing.T) {
 		{"/home/me/.config/chromium", ""},
 		{"/home/me/.config/BraveSoftware/Brave-Browser", ""},
 		{"/home/me/.config/microsoft-edge", "edge"},
-		{"/home/me/chrome-profile", "chrome"},
-		{"/some/random/path", "chrome"},
+		{"/home/me/chrome-profile", ""},
+		{"/some/random/path", ""},
 	}
 
 	for _, tc := range cases {
@@ -607,7 +607,7 @@ func TestDiscover_DoesNotScanBraveOrChromiumRoots(t *testing.T) {
 	result := Discover()
 	for _, s := range result.Stores {
 		if strings.Contains(strings.ToLower(s.Root), "brave") || strings.Contains(strings.ToLower(s.Root), "chromium") {
-			t.Fatalf("Discover scanned disallowed root: %+v", s)
+			t.Fatalf("Discover returned non-enabled root: %+v", s)
 		}
 	}
 }

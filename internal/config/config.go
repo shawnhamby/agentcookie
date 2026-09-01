@@ -139,8 +139,8 @@ type browserPathRef struct {
 const (
 	defaultBrowserName       = "chrome"
 	defaultBrowserProfile    = "Default"
-	AdmittedChromeProfile    = "Default"   // Personal
-	AdmittedEdgeProfile      = "Profile 2" // School / WSU research
+	EnabledChromeProfile = "Default"   // Personal
+	EnabledEdgeProfile   = "Profile 2" // School / WSU research
 )
 
 // Mirror of internal/chrome's browser registry (path side only). Kept in
@@ -159,10 +159,10 @@ type SecurityRef struct {
 	SharedSecret string `yaml:"shared_secret" json:"-"` // never marshal to JSON
 }
 
-// AdmittedProfileForBrowser returns the profile directory for an admitted
+// EnabledProfileForBrowser returns the profile directory for an enabled
 // source browser. When source.yaml names the same browser, its profile wins;
-// otherwise the machine's admitted defaults apply (Chrome Default, Edge Profile 2).
-func AdmittedProfileForBrowser(name string, cfg *SourceConfig) string {
+// otherwise the machine defaults apply (Chrome Default, Edge Profile 2).
+func EnabledProfileForBrowser(name string, cfg *SourceConfig) string {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		key = defaultBrowserName
@@ -172,9 +172,9 @@ func AdmittedProfileForBrowser(name string, cfg *SourceConfig) string {
 	}
 	switch key {
 	case "edge":
-		return AdmittedEdgeProfile
+		return EnabledEdgeProfile
 	default:
-		return AdmittedChromeProfile
+		return EnabledChromeProfile
 	}
 }
 
@@ -415,13 +415,9 @@ func lookupSourceBrowserPath(name string) (browserPathRef, error) {
 	if key == "" {
 		key = defaultBrowserName
 	}
-	switch key {
-	case "brave", "arc", "atlas", "chromium":
-		return browserPathRef{}, fmt.Errorf("browser %q is not supported: admitted sources are chrome and edge only", name)
-	}
 	ref, ok := sourceBrowserPaths[key]
 	if !ok {
-		return browserPathRef{}, fmt.Errorf("unsupported browser %q (supported: %s)", name, strings.Join(SupportedBrowserNames(), ", "))
+		return browserPathRef{}, fmt.Errorf("browser %q is not supported: enabled sources are chrome and edge only", name)
 	}
 	ref.SupportDir = append([]string(nil), ref.SupportDir...)
 	return ref, nil

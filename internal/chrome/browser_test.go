@@ -48,8 +48,8 @@ func TestLookupBrowserRejectsDisallowedForks(t *testing.T) {
 		if err == nil {
 			t.Fatalf("LookupBrowser(%q): expected error", name)
 		}
-		if !strings.Contains(err.Error(), "admitted sources are chrome and edge only") {
-			t.Errorf("LookupBrowser(%q) error = %v, want admitted-sources message", name, err)
+		if !strings.Contains(err.Error(), "enabled sources are chrome and edge only") {
+			t.Errorf("LookupBrowser(%q) error = %v, want enabled-sources message", name, err)
 		}
 	}
 }
@@ -59,8 +59,8 @@ func TestLookupBrowserUnknownListsSupportedNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsupported browser error")
 	}
-	if !strings.Contains(err.Error(), "supported:") || !strings.Contains(err.Error(), "chrome") {
-		t.Errorf("error should list supported names, got %v", err)
+	if !strings.Contains(err.Error(), "enabled sources are chrome and edge only") {
+		t.Errorf("error should name enabled sources, got %v", err)
 	}
 }
 

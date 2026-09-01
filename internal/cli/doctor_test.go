@@ -686,16 +686,16 @@ func TestCheckSourceAdapter(t *testing.T) {
 		if c.Severity != SeverityFail {
 			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
 		}
-		if !strings.Contains(c.Detail, "supported:") || !strings.Contains(c.Detail, "chrome") {
-			t.Errorf("detail should list supported names: %q", c.Detail)
+		if !strings.Contains(c.Detail, "enabled sources are chrome and edge only") {
+			t.Errorf("detail should name enabled sources: %q", c.Detail)
 		}
 	})
 }
 
-// TestCheckChromeStores_NeverTouchesBraveKeychain verifies the pre-fix call
-// path (Discover walking BraveSoftware + doctor probing every store's Safe
-// Storage key) cannot reach Brave. Uses injected keychain mocks only.
-func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
+// TestCheckChromeStores_OnlyEnabledSources verifies doctor discovery and
+// Keychain probes touch only enabled sources (Chrome Default, Edge Profile 2).
+// Non-enabled roots/profiles are fixtures; Keychain is mocked.
+func TestCheckChromeStores_OnlyEnabledSources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -740,21 +740,21 @@ func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
 	lookup := chrome.LookupBrowser
 	passwordFor := func(b chrome.Browser) (string, error) {
 		keychainServices = append(keychainServices, b.KeychainService)
-		if b.KeychainService == "Brave Safe Storage" {
-			t.Fatal("doctor must never read Brave Safe Storage")
+		switch b.KeychainService {
+		case "Chrome Safe Storage", "Microsoft Edge Safe Storage":
+			return "mock-password", nil
+		default:
+			t.Fatalf("doctor Keychain probe for non-enabled service %q", b.KeychainService)
+			return "", nil
 		}
-		return "mock-password", nil
 	}
 
 	c := checkChromeStoresWith("", lookup, passwordFor)
-	if strings.Contains(strings.ToLower(c.Detail), "brave") {
-		t.Fatalf("doctor detail mentions Brave: %q", c.Detail)
-	}
-	if strings.Contains(c.Detail, "Guest") {
-		t.Fatalf("doctor detail mentions Guest: %q", c.Detail)
-	}
-	if strings.Contains(c.Detail, "System Profile") {
-		t.Fatalf("doctor detail mentions System Profile: %q", c.Detail)
+	detail := strings.ToLower(c.Detail)
+	for _, notEnabled := range []string{"brave", "guest", "system profile", "arc", "chromium"} {
+		if strings.Contains(detail, notEnabled) {
+			t.Fatalf("doctor detail mentions non-enabled source %q: %q", notEnabled, c.Detail)
+		}
 	}
 	for _, svc := range keychainServices {
 		if strings.Contains(strings.ToLower(svc), "brave") {
@@ -762,7 +762,7 @@ func TestCheckChromeStores_NeverTouchesBraveKeychain(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "darwin" && len(keychainServices) == 0 {
-		t.Fatal("expected keychain probes for admitted chrome/edge stores")
+		t.Fatal("expected keychain probes for enabled chrome/edge stores")
 	}
 }
 

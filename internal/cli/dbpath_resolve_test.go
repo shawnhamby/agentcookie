@@ -48,14 +48,14 @@ func TestResolveSourceDBPath(t *testing.T) {
 			want: "/configured/edge/Cookies",
 		},
 		{
-			name: "browser switch re-derives to admitted Chrome Default profile",
+			name: "browser switch re-derives to enabled Chrome Default profile",
 			cfg:  edgeCfg, flagBrowser: "chrome", flagProfile: "", effective: "chrome",
-			want: mustDerive(t, "chrome", config.AdmittedChromeProfile),
+			want: mustDerive(t, "chrome", config.EnabledChromeProfile),
 		},
 		{
-			name: "chrome to edge switch re-derives to admitted Edge profile",
+			name: "chrome to edge switch re-derives to enabled Edge profile",
 			cfg:  chromeCfg, flagBrowser: "edge", flagProfile: "", effective: "edge",
-			want: mustDerive(t, "edge", config.AdmittedEdgeProfile),
+			want: mustDerive(t, "edge", config.EnabledEdgeProfile),
 		},
 		{
 			name: "explicit --profile re-derives even without a browser switch",

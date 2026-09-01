@@ -81,11 +81,11 @@ func TestChromeAdapterMatchesChromepaths(t *testing.T) {
 	}
 }
 
-func TestAdmittedProfilesAgree(t *testing.T) {
-	if config.AdmittedChromeProfile != "Default" {
-		t.Fatalf("Chrome admitted profile = %q, want Default", config.AdmittedChromeProfile)
+func TestEnabledProfilesAgree(t *testing.T) {
+	if config.EnabledChromeProfile != "Default" {
+		t.Fatalf("Chrome enabled profile = %q, want Default", config.EnabledChromeProfile)
 	}
-	if config.AdmittedEdgeProfile != "Profile 2" {
-		t.Fatalf("Edge admitted profile = %q, want Profile 2", config.AdmittedEdgeProfile)
+	if config.EnabledEdgeProfile != "Profile 2" {
+		t.Fatalf("Edge enabled profile = %q, want Profile 2", config.EnabledEdgeProfile)
 	}
 }

@@ -23,7 +23,7 @@ func resolveSourceDBPath(cfg *config.SourceConfig, flagBrowser, flagProfile, eff
 	}
 	profile := flagProfile
 	if profile == "" {
-		profile = config.AdmittedProfileForBrowser(effectiveBrowser, cfg)
+		profile = config.EnabledProfileForBrowser(effectiveBrowser, cfg)
 	}
 	dbPath, err := config.SourceBrowserCookiesPath(effectiveBrowser, profile)
 	if err != nil {

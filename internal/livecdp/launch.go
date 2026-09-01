@@ -13,7 +13,7 @@ import (
 
 // FindChrome locates the Google Chrome executable. macOS app bundles first
 // (the agentcookie target platform), then PATH. The owned browser must be
-// real Chrome -- Brave, Arc, and generic Chromium are not admitted.
+// real Chrome -- only enabled Google Chrome is used.
 func FindChrome() (string, error) {
 	var candidates []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {

@@ -351,7 +351,7 @@ func buildReport(d doctorDeps) DoctorReport {
 	if sinkCfg != nil {
 		cdpProfileDir = sinkCfg.CDP.ProfileDir
 	}
-	// Extra-profile discovery scans both admitted browsers (Chrome + Edge).
+	// Discovery scans enabled sources only (Chrome Default, Edge Profile 2).
 	// source.yaml browser.name scopes export/agent-sync defaults only.
 	checks = append(checks, checkChromeStores(cdpProfileDir))
 
@@ -1568,8 +1568,8 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
 // profileDir is passed to DiscoverForSource to include a configured CDP profile.
-// Automatic discovery scans both admitted browsers (Chrome + Edge); Brave and
-// Arc roots are never walked and their Safe Storage keys are never read.
+// Discovery and Keychain probes touch enabled sources only
+// (Chrome Default, Edge Profile 2).
 
 func checkChromeStores(profileDir string) Check {
 	return checkChromeStoresWith(profileDir, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)

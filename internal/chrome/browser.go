@@ -39,20 +39,16 @@ var browserRegistry = map[string]Browser{
 }
 
 // LookupBrowser returns the browser descriptor for name. Empty name defaults
-// to Chrome for backward compatibility. Brave, Arc, and other forks are
-// rejected fail-closed so their Safe Storage keys are never read.
+// to Chrome for backward compatibility. Only enabled sources (chrome, edge)
+// resolve; everything else fails closed before any Keychain read.
 func LookupBrowser(name string) (Browser, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		key = defaultBrowserName
 	}
-	switch key {
-	case "brave", "arc", "atlas", "chromium":
-		return Browser{}, fmt.Errorf("browser %q is not supported: admitted sources are chrome and edge only", name)
-	}
 	b, ok := browserRegistry[key]
 	if !ok {
-		return Browser{}, fmt.Errorf("unsupported browser %q (supported: %s)", name, strings.Join(SupportedBrowserNames(), ", "))
+		return Browser{}, fmt.Errorf("browser %q is not supported: enabled sources are chrome and edge only", name)
 	}
 	b.SupportDir = append([]string(nil), b.SupportDir...)
 	return b, nil
