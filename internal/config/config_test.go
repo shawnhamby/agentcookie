@@ -691,10 +691,10 @@ func TestEnabledProfileForBrowser(t *testing.T) {
 		cfg     *SourceConfig
 		want    string
 	}{
-		{"chrome default", "chrome", nil, EnabledChromeProfile},
-		{"edge default", "edge", nil, EnabledEdgeProfile},
+		{"chrome default", "chrome", nil, "Default"},
+		{"edge default", "edge", nil, "Default"},
 		{"source.yaml edge profile", "edge", edgeCfg, "Profile 2"},
-		{"chrome ignores edge source profile", "chrome", edgeCfg, EnabledChromeProfile},
+		{"chrome ignores edge source profile", "chrome", edgeCfg, "Default"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -702,6 +702,29 @@ func TestEnabledProfileForBrowser(t *testing.T) {
 				t.Fatalf("EnabledProfileForBrowser(%q) = %q, want %q", tc.browser, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveEnabledProducts(t *testing.T) {
+	got, err := ResolveEnabledProducts(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "chrome" || got[1] != "edge" {
+		t.Fatalf("default products = %v, want [chrome edge]", got)
+	}
+
+	cfg := &SourceConfig{EnabledProducts: []string{"Edge", "chrome", "edge"}}
+	got, err = ResolveEnabledProducts(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "edge" || got[1] != "chrome" {
+		t.Fatalf("configured products = %v, want [edge chrome]", got)
+	}
+
+	if _, err := ResolveEnabledProducts(&SourceConfig{EnabledProducts: []string{"brave"}}); err == nil {
+		t.Fatal("expected error for unlisted product brave")
 	}
 }
 

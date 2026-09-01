@@ -168,27 +168,30 @@ func TestDiscover_MultipleProfiles(t *testing.T) {
 
 	result := Discover()
 
-	if len(result.Stores) != 1 {
-		t.Errorf("expected 1 enabled store (Chrome Default), got %d", len(result.Stores))
+	if len(result.Stores) != 3 {
+		t.Errorf("expected 3 user-profile stores, got %d", len(result.Stores))
 	}
 
 	profiles := make(map[string]bool)
 	for _, s := range result.Stores {
 		profiles[s.Profile] = true
-		if s.Profile != "Default" || s.Browser != "chrome" {
-			t.Errorf("unexpected store: %+v", s)
+		if s.Browser != "chrome" {
+			t.Errorf("unexpected browser on store: %+v", s)
+		}
+		if s.Profile == "Guest Profile" || s.Profile == "System Profile" {
+			t.Errorf("Guest/System must never be a store: %+v", s)
 		}
 	}
-	if !profiles["Default"] {
-		t.Error("missing enabled Chrome Default")
-	}
-	for _, extra := range []string{"Profile 1", "Profile 2", "Guest Profile"} {
-		if profiles[extra] {
-			t.Errorf("non-enabled profile %s must not be a store", extra)
+	for _, want := range []string{"Default", "Profile 1", "Profile 2"} {
+		if !profiles[want] {
+			t.Errorf("missing user profile store %s", want)
 		}
+	}
+	if profiles["Guest Profile"] {
+		t.Error("Guest Profile must not be a store")
 	}
 	for _, s := range result.Skipped {
-		if !isEnabledStore("chrome", s.Profile) {
+		if !isEnabledStore("chrome", s.Profile, DefaultEnabledProducts) {
 			t.Errorf("non-enabled profile %q must not appear in Skipped", s.Profile)
 		}
 	}
@@ -379,14 +382,15 @@ func TestDiscoverForConfig_RejectsBareNonEnabledProfileDir(t *testing.T) {
 }
 
 func TestIsEnabledStore(t *testing.T) {
+	enabled := DefaultEnabledProducts
 	cases := []struct {
 		browser, profile string
-		want            bool
+		want             bool
 	}{
 		{"chrome", "Default", true},
 		{"edge", "Profile 2", true},
-		{"chrome", "Profile 2", false},
-		{"edge", "Default", false},
+		{"chrome", "Profile 2", true},
+		{"edge", "Default", true},
 		{"edge", "Guest Profile", false},
 		{"chrome", "Guest Profile", false},
 		{"chrome", "System Profile", false},
@@ -395,10 +399,14 @@ func TestIsEnabledStore(t *testing.T) {
 		{"chrome", "chrome-profile", false},
 	}
 	for _, tc := range cases {
-		got := isEnabledStore(tc.browser, tc.profile)
+		got := isEnabledStore(tc.browser, tc.profile, enabled)
 		if got != tc.want {
 			t.Errorf("isEnabledStore(%q, %q) = %v, want %v", tc.browser, tc.profile, got, tc.want)
 		}
+	}
+	// Product list can exclude chrome entirely.
+	if isEnabledStore("chrome", "Default", []string{"edge"}) {
+		t.Error("chrome must not be enabled when products are edge-only")
 	}
 }
 
@@ -463,6 +471,7 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 	result := DiscoverForConfig(userDataDir)
 
 	foundDefault := false
+	foundProfile1 := false
 	for _, s := range result.Stores {
 		if s.Root == userDataDir && s.Profile == "Default" && s.CookiesPath == defaultCookies {
 			foundDefault = true
@@ -471,11 +480,14 @@ func TestDiscoverForConfig_ScansUserDataDir(t *testing.T) {
 			}
 		}
 		if s.Profile == "Profile 1" {
-			t.Errorf("Profile 1 is not an enabled store: %+v", s)
+			foundProfile1 = true
 		}
 	}
 	if !foundDefault {
 		t.Error("Default profile should be discovered from enabled Chrome user-data-dir")
+	}
+	if !foundProfile1 {
+		t.Error("Profile 1 user profile should be discovered from enabled Chrome user-data-dir")
 	}
 }
 
@@ -643,7 +655,7 @@ func TestDiscoverForSource_HonorsBrowserScope(t *testing.T) {
 		}
 	}
 	if len(edgeOnly.Stores) != 1 || edgeOnly.Stores[0].Profile != "Profile 2" {
-		t.Fatalf("expected only edge/Profile 2, got %+v", edgeOnly.Stores)
+		t.Fatalf("expected only edge/Profile 2 user profile, got %+v", edgeOnly.Stores)
 	}
 
 	chromeOnly := DiscoverForSource("", "chrome")
@@ -654,5 +666,12 @@ func TestDiscoverForSource_HonorsBrowserScope(t *testing.T) {
 	}
 	if len(chromeOnly.Stores) == 0 {
 		t.Fatal("expected chrome store when scoped to chrome")
+	}
+
+	edgeOnlyProducts := DiscoverForSourceWithProducts("", "", []string{"edge"})
+	for _, s := range edgeOnlyProducts.Stores {
+		if s.Browser != "edge" {
+			t.Fatalf("edge-only products included %q: %+v", s.Browser, s)
+		}
 	}
 }

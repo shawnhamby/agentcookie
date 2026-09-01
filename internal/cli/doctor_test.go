@@ -693,8 +693,8 @@ func TestCheckSourceAdapter(t *testing.T) {
 }
 
 // TestCheckChromeStores_OnlyEnabledSources verifies doctor discovery and
-// Keychain probes touch only enabled sources (Chrome Default, Edge Profile 2).
-// Non-enabled roots/profiles are fixtures; Keychain is mocked.
+// Keychain probes touch only enabled products' user profiles. Unlisted
+// products (Brave) and Guest/System profiles are fixtures; Keychain is mocked.
 func TestCheckChromeStores_OnlyEnabledSources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -721,6 +721,7 @@ func TestCheckChromeStores_OnlyEnabledSources(t *testing.T) {
 	}{
 		{braveRoot, "Default"},
 		{chromeRoot, "Default"},
+		{chromeRoot, "Profile 1"},
 		{edgeRoot, "Profile 2"},
 		{edgeRoot, "Guest Profile"},
 		{chromeRoot, "Guest Profile"},
@@ -749,7 +750,7 @@ func TestCheckChromeStores_OnlyEnabledSources(t *testing.T) {
 		}
 	}
 
-	c := checkChromeStoresWith("", lookup, passwordFor)
+	c := checkChromeStoresWith("", nil, lookup, passwordFor)
 	detail := strings.ToLower(c.Detail)
 	for _, notEnabled := range []string{"brave", "guest", "system profile", "arc", "chromium"} {
 		if strings.Contains(detail, notEnabled) {

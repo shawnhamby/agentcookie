@@ -22,8 +22,14 @@ type SourceConfig struct {
 	Sink     SinkRef     `yaml:"sink" json:"sink"`
 	Chrome   ChromeRef   `yaml:"chrome" json:"chrome"`
 	Browser  BrowserRef  `yaml:"browser,omitempty" json:"browser,omitempty"`
-	Peer     PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	// EnabledProducts is the ordered list of browser products whose user
+	// profiles participate in discovery and default export merge. List order
+	// is conflict precedence (name+domain+path). Empty uses
+	// DefaultEnabledProducts. Unlisted products are never discovered or
+	// Keychain-probed.
+	EnabledProducts []string    `yaml:"enabled_products,omitempty" json:"enabled_products,omitempty"`
+	Peer            PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security        SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
 	// Cmux configures the same-machine local loop: `agentcookie cmux-sync`
 	// reads this machine's Chrome and injects into this machine's cmux
 	// browser. Independent of the sink/peer push path; absent = loop off.
@@ -137,11 +143,13 @@ type browserPathRef struct {
 }
 
 const (
-	defaultBrowserName       = "chrome"
-	defaultBrowserProfile    = "Default"
-	EnabledChromeProfile = "Default"   // Personal
-	EnabledEdgeProfile   = "Profile 2" // School / WSU research
+	defaultBrowserName    = "chrome"
+	defaultBrowserProfile = "Default"
 )
+
+// DefaultEnabledProducts is the host default product list when source.yaml
+// omits enabled_products. Order is conflict precedence for merged export.
+var DefaultEnabledProducts = []string{"chrome", "edge"}
 
 // Mirror of internal/chrome's browser registry (path side only). Kept in
 // sync by the guard tests in internal/cli; config stays free of the chrome
@@ -159,9 +167,51 @@ type SecurityRef struct {
 	SharedSecret string `yaml:"shared_secret" json:"-"` // never marshal to JSON
 }
 
-// EnabledProfileForBrowser returns the profile directory for an enabled
-// source browser. When source.yaml names the same browser, its profile wins;
-// otherwise the machine defaults apply (Chrome Default, Edge Profile 2).
+// ResolveEnabledProducts returns the ordered enabled-product list for cfg.
+// Empty or nil config uses DefaultEnabledProducts. Entries are lowercased and
+// validated against the supported source-browser registry; unknown names fail.
+func ResolveEnabledProducts(cfg *SourceConfig) ([]string, error) {
+	raw := DefaultEnabledProducts
+	if cfg != nil && len(cfg.EnabledProducts) > 0 {
+		raw = cfg.EnabledProducts
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, name := range raw {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, err := lookupSourceBrowserPath(key); err != nil {
+			return nil, fmt.Errorf("enabled_products: %w", err)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if len(out) == 0 {
+		return append([]string(nil), DefaultEnabledProducts...), nil
+	}
+	return out, nil
+}
+
+// ProductEnabled reports whether name is in the enabled product list.
+func ProductEnabled(name string, enabled []string) bool {
+	key := strings.ToLower(strings.TrimSpace(name))
+	for _, p := range enabled {
+		if p == key {
+			return true
+		}
+	}
+	return false
+}
+
+// EnabledProfileForBrowser returns the profile directory for a single-store
+// command (agent-sync, cmux-sync). When source.yaml names the same browser,
+// its profile wins; otherwise Chromium's Default profile is used. Product
+// enablement and multi-profile merge are owned by enabled_products + export.
 func EnabledProfileForBrowser(name string, cfg *SourceConfig) string {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
@@ -170,12 +220,7 @@ func EnabledProfileForBrowser(name string, cfg *SourceConfig) string {
 	if cfg != nil && strings.EqualFold(cfg.Browser.Name, key) && cfg.Browser.Profile != "" {
 		return cfg.Browser.Profile
 	}
-	switch key {
-	case "edge":
-		return EnabledEdgeProfile
-	default:
-		return EnabledChromeProfile
-	}
+	return defaultBrowserProfile
 }
 
 // LoadSource reads source.yaml from dir.
@@ -225,6 +270,9 @@ func LoadSourceLocal(dir string) (*SourceConfig, error) {
 // push-only sink/peer/secret validation).
 func resolveSourcePaths(path string, cfg *SourceConfig) error {
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
+	if _, err := ResolveEnabledProducts(cfg); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
 	if cfg.Browser.Name != "" {
 		if _, err := lookupSourceBrowserPath(cfg.Browser.Name); err != nil {
 			return fmt.Errorf("%s: %w", path, err)

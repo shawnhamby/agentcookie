@@ -81,11 +81,15 @@ func TestChromeAdapterMatchesChromepaths(t *testing.T) {
 	}
 }
 
-func TestEnabledProfilesAgree(t *testing.T) {
-	if config.EnabledChromeProfile != "Default" {
-		t.Fatalf("Chrome enabled profile = %q, want Default", config.EnabledChromeProfile)
+func TestEnabledProductsAgree(t *testing.T) {
+	if len(config.DefaultEnabledProducts) != len(chromepaths.DefaultEnabledProducts) {
+		t.Fatalf("enabled-product defaults differ: config=%v chromepaths=%v",
+			config.DefaultEnabledProducts, chromepaths.DefaultEnabledProducts)
 	}
-	if config.EnabledEdgeProfile != "Profile 2" {
-		t.Fatalf("Edge enabled profile = %q, want Profile 2", config.EnabledEdgeProfile)
+	for i := range config.DefaultEnabledProducts {
+		if config.DefaultEnabledProducts[i] != chromepaths.DefaultEnabledProducts[i] {
+			t.Fatalf("enabled-product defaults differ at %d: config=%v chromepaths=%v",
+				i, config.DefaultEnabledProducts, chromepaths.DefaultEnabledProducts)
+		}
 	}
 }

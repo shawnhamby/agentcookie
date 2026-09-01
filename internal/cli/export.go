@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 )
@@ -26,19 +29,26 @@ const exportEpochOffsetSec = 11644473600
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Emit this machine's current plaintext cookie set as JSON for a consumer to import",
-	Long: `export runs the live read pipeline -- read this Mac's Chrome cookies,
-decrypt them, apply the blocklist, and drop device-bound (DBSC) cookies --
-and prints the surviving set to stdout as a JSON array in the shape a Chromium
-consumer accepts (e.g. ` + "`orca cookie import`" + `):
+	Long: `export runs the live read pipeline -- read this Mac's enabled browser
+cookies, decrypt them, apply the blocklist, and drop device-bound (DBSC)
+cookies -- and prints the surviving set to stdout as a JSON array in the shape
+a Chromium consumer accepts (e.g. ` + "`orca cookie import`" + `):
 
   agentcookie export | orca cookie import
+
+By default it merges every user profile of every enabled product
+(source.yaml enabled_products, default chrome then edge) into one store.
+Conflict precedence follows product list order (name+domain+path); earlier
+products win. --browser chrome|edge pins to one product and still merges that
+product's user profiles. Guest and System profiles are never stores.
 
 It is a live read (the same pipeline source and agent-sync use), so it does
 not depend on the sink or the sidecar and works on a purely-local machine.
 Each object carries name, value, domain, path, secure, httpOnly, sameSite, and
 (for persistent cookies) expirationDate in Unix seconds.
 
-  agentcookie export                         emit the full set as JSON
+  agentcookie export                         emit the merged set as JSON
+  agentcookie export --browser chrome        pin to one enabled product
   agentcookie export --domain %github.com    limit to matching hosts
 
 stdout is a clean JSON document; the count of skipped device-bound cookies is
@@ -51,13 +61,13 @@ excluded, not faked.`,
 func init() {
 	exportCmd.Flags().StringSliceVar(&exportDomains, "domain", nil, "limit to these host_key LIKE patterns (repeatable), e.g. --domain %github.com")
 	exportCmd.Flags().BoolVar(&exportSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC); also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
-	exportCmd.Flags().StringVar(&exportBrowser, "browser", "", "source browser name (default: source.yaml browser, then Chrome)")
+	exportCmd.Flags().StringVar(&exportBrowser, "browser", "", "pin to one enabled product (default: merge all enabled products)")
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
 	// LoadSourceLocal, not LoadSource: export has no push target, so it must
 	// not require sink.url or a peer/secret. A missing source.yaml is fine
-	// (defaults: default Chrome path, no blocklist).
+	// (defaults: enabled products chrome+edge, no blocklist).
 	cfg, err := config.LoadSourceLocal(common.ConfigDir)
 	if err != nil {
 		return err
@@ -69,30 +79,25 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	browserName := exportBrowser
-	if browserName == "" {
-		browserName = cfg.Browser.Name
-	}
-	sourceBrowser, err := chrome.LookupBrowser(browserName)
+	enabled, err := config.ResolveEnabledProducts(cfg)
 	if err != nil {
 		return err
 	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+
+	pin := strings.ToLower(strings.TrimSpace(exportBrowser))
+	if pin != "" {
+		if !config.ProductEnabled(pin, enabled) {
+			// Fail closed before any Keychain probe for unlisted products.
+			if _, err := chrome.LookupBrowser(pin); err != nil {
+				return err
+			}
+			return fmt.Errorf("browser %q is not in enabled_products (%s)", pin, strings.Join(enabled, ", "))
+		}
+		enabled = []string{pin}
 	}
 
 	skipDBSC := exportSkipDBSC || os.Getenv("AGENTCOOKIE_SKIP_DBSC_SUSPECT") == "1"
-
-	dbPath, err := resolveSourceDBPath(cfg, exportBrowser, "", browserName)
-	if err != nil {
-		return err
-	}
-	cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, time.Now().UTC())
+	cookies, st, err := readMergedExportCookies(enabled, blocklist, skipDBSC, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -110,6 +115,101 @@ func runExport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "agentcookie export: skipped %d device-bound (DBSC) cookies -- those sessions cannot transfer and will read as logged-out in the consumer\n", st.dbsc.skipped)
 	}
 	return nil
+}
+
+// readMergedExportCookies discovers stores for enabled products, decrypts each
+// user profile, and merges with first-wins precedence following product order
+// then Default-before-other profiles. Per-store decrypt failures are skipped
+// so one locked profile does not fail the whole export.
+func readMergedExportCookies(enabled []string, blocklist *config.Blocklist, skipDBSC bool, now time.Time) ([]chrome.Cookie, readStats, error) {
+	discovery := chromepaths.DiscoverForSourceWithProducts("", "", enabled)
+	if len(discovery.Stores) == 0 {
+		return nil, readStats{}, fmt.Errorf("export: no cookie stores found for enabled products %s", strings.Join(enabled, ", "))
+	}
+
+	stores := sortStoresForMerge(discovery.Stores, enabled)
+	var merged []chrome.Cookie
+	var st readStats
+	st.droppedHosts = map[string]int{}
+	keys := map[string][]byte{}
+	var readErrs []string
+
+	for _, store := range stores {
+		key, ok := keys[store.Browser]
+		if !ok {
+			derived, err := getChromeDecryptKey(store.Browser)
+			if err != nil {
+				readErrs = append(readErrs, store.Browser+"/"+store.Profile+": "+err.Error())
+				continue
+			}
+			keys[store.Browser] = derived
+			key = derived
+		}
+		cookies, storeStats, err := readFilteredCookies(store.CookiesPath, blocklist, key, skipDBSC, now)
+		if err != nil {
+			readErrs = append(readErrs, store.Browser+"/"+store.Profile+": "+err.Error())
+			continue
+		}
+		st.totalRead += storeStats.totalRead
+		st.totalDropped += storeStats.totalDropped
+		for host, n := range storeStats.droppedHosts {
+			st.droppedHosts[host] += n
+		}
+		st.dbsc.warned += storeStats.dbsc.warned
+		st.dbsc.skipped += storeStats.dbsc.skipped
+		merged = appendCookieMerge(merged, cookies)
+	}
+
+	if len(merged) == 0 && len(readErrs) > 0 {
+		return nil, st, fmt.Errorf("export: failed to read cookie stores: %s", strings.Join(readErrs, "; "))
+	}
+	return merged, st, nil
+}
+
+// sortStoresForMerge orders stores by enabled-product precedence, then Default
+// first, then profile name. First-wins merge therefore prefers earlier products.
+func sortStoresForMerge(stores []chromepaths.Store, enabled []string) []chromepaths.Store {
+	rank := make(map[string]int, len(enabled))
+	for i, name := range enabled {
+		rank[name] = i
+	}
+	out := append([]chromepaths.Store(nil), stores...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := rank[out[i].Browser], rank[out[j].Browser]
+		if ri != rj {
+			return ri < rj
+		}
+		if out[i].IsDefault != out[j].IsDefault {
+			return out[i].IsDefault
+		}
+		if out[i].Profile != out[j].Profile {
+			return out[i].Profile < out[j].Profile
+		}
+		return out[i].CookiesPath < out[j].CookiesPath
+	})
+	return out
+}
+
+func cookieMergeKey(c chrome.Cookie) string {
+	return c.Name + "\x00" + c.HostKey + "\x00" + c.Path
+}
+
+// appendCookieMerge appends cookies from next that are not already present
+// under the name+domain+path identity key (first-wins).
+func appendCookieMerge(dst, next []chrome.Cookie) []chrome.Cookie {
+	seen := make(map[string]struct{}, len(dst))
+	for _, c := range dst {
+		seen[cookieMergeKey(c)] = struct{}{}
+	}
+	for _, c := range next {
+		k := cookieMergeKey(c)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		dst = append(dst, c)
+	}
+	return dst
 }
 
 // exportCookie is the per-cookie JSON shape a Chromium consumer's importer

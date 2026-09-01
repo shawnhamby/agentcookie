@@ -351,9 +351,14 @@ func buildReport(d doctorDeps) DoctorReport {
 	if sinkCfg != nil {
 		cdpProfileDir = sinkCfg.CDP.ProfileDir
 	}
-	// Discovery scans enabled sources only (Chrome Default, Edge Profile 2).
-	// source.yaml browser.name scopes export/agent-sync defaults only.
-	checks = append(checks, checkChromeStores(cdpProfileDir))
+	// Discovery scans enabled products' user profiles only.
+	enabledProducts := chromepaths.DefaultEnabledProducts
+	if srcCfg != nil {
+		if products, err := config.ResolveEnabledProducts(srcCfg); err == nil {
+			enabledProducts = products
+		}
+	}
+	checks = append(checks, checkChromeStores(cdpProfileDir, enabledProducts))
 
 	exit := 0
 	for _, c := range checks {
@@ -1568,19 +1573,20 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
 // profileDir is passed to DiscoverForSource to include a configured CDP profile.
-// Discovery and Keychain probes touch enabled sources only
-// (Chrome Default, Edge Profile 2).
+// Discovery and Keychain probes touch enabled products' user profiles only.
+// Guest and System profiles are never stores.
 
-func checkChromeStores(profileDir string) Check {
-	return checkChromeStoresWith(profileDir, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)
+func checkChromeStores(profileDir string, enabledProducts []string) Check {
+	return checkChromeStoresWith(profileDir, enabledProducts, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)
 }
 
 func checkChromeStoresWith(
 	profileDir string,
+	enabledProducts []string,
 	lookupBrowser func(string) (chrome.Browser, error),
 	passwordFor func(chrome.Browser) (string, error),
 ) Check {
-	result := chromepaths.DiscoverForSource(profileDir, "")
+	result := chromepaths.DiscoverForSourceWithProducts(profileDir, "", enabledProducts)
 
 	if len(result.Stores) == 0 && len(result.Skipped) == 0 {
 		return Check{

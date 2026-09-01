@@ -30,14 +30,17 @@ type Store struct {
 	Browser string
 }
 
-// DiscoverOptions scopes discovery to enabled sources.
+// DiscoverOptions scopes discovery to enabled products.
 type DiscoverOptions struct {
-	// Browser limits automatic root scanning to one enabled browser
-	// ("chrome" or "edge"). Empty scans both enabled browsers.
+	// Browser limits automatic root scanning to one enabled product
+	// ("chrome" or "edge"). Empty scans every enabled product.
 	Browser string
 	// ProfileDir is an explicit user-data-dir from CDP or source config.
-	// Only enabled browser+profile pairs under it are returned.
+	// Only user profiles of enabled products under it are returned.
 	ProfileDir string
+	// EnabledProducts is the ordered product list. Empty uses
+	// DefaultEnabledProducts. Unlisted products are never scanned.
+	EnabledProducts []string
 }
 
 // SkippedStore is a profile directory that was found but cannot be used,
@@ -62,22 +65,52 @@ type DiscoverResult struct {
 // isEnabledStore decides which profiles become stores.
 var profileDirName = regexp.MustCompile(`^(Default|Profile \d+|Guest Profile|System Profile)$`)
 
-const (
-	enabledChromeProfile = "Default"   // Personal
-	enabledEdgeProfile   = "Profile 2" // School / WSU research
-)
+// userProfileName matches profiles that may become stores. Guest and System
+// profiles are never stores even when their product is enabled.
+var userProfileName = regexp.MustCompile(`^(Default|Profile \d+)$`)
+
+// DefaultEnabledProducts mirrors config.DefaultEnabledProducts. Guarded by
+// internal/cli registry consistency tests.
+var DefaultEnabledProducts = []string{"chrome", "edge"}
+
+func resolveEnabledProducts(products []string) []string {
+	if len(products) == 0 {
+		return append([]string(nil), DefaultEnabledProducts...)
+	}
+	out := make([]string, 0, len(products))
+	seen := make(map[string]bool, len(products))
+	for _, name := range products {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if len(out) == 0 {
+		return append([]string(nil), DefaultEnabledProducts...)
+	}
+	return out
+}
+
+func productEnabled(browser string, enabled []string) bool {
+	key := strings.ToLower(strings.TrimSpace(browser))
+	for _, p := range enabled {
+		if p == key {
+			return true
+		}
+	}
+	return false
+}
 
 // isEnabledStore reports whether browser+profile is an enabled source.
-// Enabled sources are Chrome Default and Edge Profile 2 only.
-func isEnabledStore(browser, profile string) bool {
-	switch browser {
-	case "chrome":
-		return profile == enabledChromeProfile
-	case "edge":
-		return profile == enabledEdgeProfile
-	default:
+// A store requires an enabled product and a user profile directory
+// (Default or Profile N). Guest, System, and unlisted products never qualify.
+func isEnabledStore(browser, profile string, enabled []string) bool {
+	if !productEnabled(browser, enabled) {
 		return false
 	}
+	return userProfileName.MatchString(profile)
 }
 
 // skipDirs are directory names that should never be treated as profiles.
@@ -106,8 +139,8 @@ var skipDirs = map[string]bool{
 }
 
 // enabledBrowserRoots returns OS-standard user-data-dir roots for enabled
-// browsers only (Google Chrome and Microsoft Edge).
-func enabledBrowserRoots(browser string) []string {
+// products only. Unlisted products (Brave, Arc, …) are never returned.
+func enabledBrowserRoots(browser string, enabled []string) []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -116,21 +149,28 @@ func enabledBrowserRoots(browser string) []string {
 	key := strings.ToLower(strings.TrimSpace(browser))
 	var roots []string
 
+	want := func(name string) bool {
+		if !productEnabled(name, enabled) {
+			return false
+		}
+		return key == "" || key == name
+	}
+
 	switch runtime.GOOS {
 	case "darwin":
 		appSupport := filepath.Join(home, "Library", "Application Support")
-		if key == "" || key == "chrome" {
+		if want("chrome") {
 			roots = append(roots, filepath.Join(appSupport, "Google", "Chrome"))
 		}
-		if key == "" || key == "edge" {
+		if want("edge") {
 			roots = append(roots, filepath.Join(appSupport, "Microsoft Edge"))
 		}
 	case "linux":
 		configDir := filepath.Join(home, ".config")
-		if key == "" || key == "chrome" {
+		if want("chrome") {
 			roots = append(roots, filepath.Join(configDir, "google-chrome"))
 		}
-		if key == "" || key == "edge" {
+		if want("edge") {
 			roots = append(roots, filepath.Join(configDir, "microsoft-edge"))
 		}
 	}
@@ -170,20 +210,22 @@ func browserForRoot(root string) string {
 
 // Discover scans enabled browser user-data-dirs and returns usable stores.
 // A store is usable if Cookies or Network/Cookies exists. Local State is NOT
-// required. Only enabled sources (Chrome Default, Edge Profile 2) are returned.
+// required. All user profiles of enabled products are returned; Guest and
+// System profiles never are.
 func Discover() DiscoverResult {
 	return DiscoverWithOptions(DiscoverOptions{})
 }
 
 // DiscoverWithOptions scans enabled browser roots and optional explicit dirs.
-// Non-enabled browsers and profiles are never scanned into Stores.
+// Non-enabled products and Guest/System profiles are never scanned into Stores.
 func DiscoverWithOptions(opts DiscoverOptions) DiscoverResult {
 	var result DiscoverResult
+	enabled := resolveEnabledProducts(opts.EnabledProducts)
 
 	defaultRoot := osDefaultChromeRoot()
 	seen := make(map[string]bool)
 
-	for _, root := range enabledBrowserRoots(opts.Browser) {
+	for _, root := range enabledBrowserRoots(opts.Browser, enabled) {
 		if root == "" {
 			continue
 		}
@@ -202,7 +244,7 @@ func DiscoverWithOptions(opts DiscoverOptions) DiscoverResult {
 		}
 
 		browser := browserForRoot(root)
-		if browser == "" {
+		if browser == "" || !productEnabled(browser, enabled) {
 			continue
 		}
 		isDefaultRoot := abs == defaultRoot || root == defaultRoot
@@ -219,12 +261,12 @@ func DiscoverWithOptions(opts DiscoverOptions) DiscoverResult {
 				continue
 			}
 			profileDir := filepath.Join(root, name)
-			addStoreIfEnabled(&result, root, name, profileDir, browser, isDefaultRoot && name == "Default")
+			addStoreIfEnabled(&result, root, name, profileDir, browser, isDefaultRoot && name == "Default", enabled)
 		}
 	}
 
 	if opts.ProfileDir != "" {
-		mergeExplicitProfileDir(opts.ProfileDir, &result)
+		mergeExplicitProfileDir(opts.ProfileDir, &result, enabled)
 	}
 
 	return result
@@ -278,21 +320,26 @@ func DiscoverForConfig(profileDir string) DiscoverResult {
 	return DiscoverForSource(profileDir, "")
 }
 
-// DiscoverForSource scopes discovery to enabled browsers. When browser is
-// non-empty (from source.yaml or --browser), automatic root scanning is limited
-// to that browser. profileDir adds an explicit user-data-dir when set; only
-// enabled profiles under it become stores.
+// DiscoverForSource scopes discovery to enabled products. When browser is
+// non-empty (from --browser), automatic root scanning is limited to that
+// product. profileDir adds an explicit user-data-dir when set; only user
+// profiles of enabled products under it become stores.
 func DiscoverForSource(profileDir, browser string) DiscoverResult {
+	return DiscoverForSourceWithProducts(profileDir, browser, nil)
+}
+
+// DiscoverForSourceWithProducts is DiscoverForSource with an explicit product list.
+func DiscoverForSourceWithProducts(profileDir, browser string, enabledProducts []string) DiscoverResult {
 	if profileDir == "" {
-		return DiscoverWithOptions(DiscoverOptions{Browser: browser})
+		return DiscoverWithOptions(DiscoverOptions{Browser: browser, EnabledProducts: enabledProducts})
 	}
 
 	var result DiscoverResult
-	mergeExplicitProfileDir(profileDir, &result)
+	mergeExplicitProfileDir(profileDir, &result, resolveEnabledProducts(enabledProducts))
 	return result
 }
 
-func mergeExplicitProfileDir(profileDir string, result *DiscoverResult) {
+func mergeExplicitProfileDir(profileDir string, result *DiscoverResult, enabled []string) {
 	expanded := expandTilde(profileDir)
 	abs, err := filepath.Abs(expanded)
 	if err != nil {
@@ -303,7 +350,7 @@ func mergeExplicitProfileDir(profileDir string, result *DiscoverResult) {
 		// Bare profile path: identify from parent user-data-dir.
 		browser = browserForRoot(filepath.Dir(abs))
 	}
-	if browser == "" {
+	if browser == "" || !productEnabled(browser, enabled) {
 		return
 	}
 	for _, s := range result.Stores {
@@ -311,22 +358,22 @@ func mergeExplicitProfileDir(profileDir string, result *DiscoverResult) {
 			return
 		}
 	}
-	if addedFromChildren := scanUserDataDir(abs, result); !addedFromChildren {
-		addStoreIfEnabled(result, filepath.Dir(abs), filepath.Base(abs), abs, browser, false)
+	if addedFromChildren := scanUserDataDir(abs, result, enabled); !addedFromChildren {
+		addStoreIfEnabled(result, filepath.Dir(abs), filepath.Base(abs), abs, browser, false, enabled)
 	}
 }
 
 // scanUserDataDir scans root as a Chromium user-data-dir. Returns true if any
 // profile-shaped children exist (enabled or not), so callers do not probe the
 // root itself as a profile.
-func scanUserDataDir(root string, result *DiscoverResult) bool {
+func scanUserDataDir(root string, result *DiscoverResult, enabled []string) bool {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return false
 	}
 
 	browser := browserForRoot(root)
-	if browser == "" {
+	if browser == "" || !productEnabled(browser, enabled) {
 		return false
 	}
 	foundProfiles := false
@@ -344,15 +391,15 @@ func scanUserDataDir(root string, result *DiscoverResult) bool {
 		}
 		foundProfiles = true
 		profileDir := filepath.Join(root, name)
-		addStoreIfEnabled(result, root, name, profileDir, browser, name == "Default")
+		addStoreIfEnabled(result, root, name, profileDir, browser, name == "Default", enabled)
 	}
 
 	return foundProfiles
 }
 
-// addStoreIfEnabled probes Cookies only for enabled browser+profile pairs.
-func addStoreIfEnabled(result *DiscoverResult, root, name, profileDir, browser string, isDefault bool) {
-	if !isEnabledStore(browser, name) {
+// addStoreIfEnabled probes Cookies only for enabled product+user-profile pairs.
+func addStoreIfEnabled(result *DiscoverResult, root, name, profileDir, browser string, isDefault bool, enabled []string) {
+	if !isEnabledStore(browser, name, enabled) {
 		return
 	}
 	store, skipReason := probeProfileDir(root, name, profileDir, browser, isDefault)
