@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/mvanhorn/agentcookie/internal/chrome"
+	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/sinkpush"
 )
 
 // resolveSourceDBPath returns the cookie DB path for the effective source
@@ -70,4 +72,59 @@ func readFilteredCookies(dbPath string, blocklist *config.Blocklist, key []byte,
 		sample:  dbscSampleReasons(dbscRes),
 	}
 	return all, st, nil
+}
+
+// agentSyncSourcePinned reports whether agent-sync should read one cookie store
+// (--browser or --profile) instead of the default merged enabled_products set.
+func agentSyncSourcePinned(flagBrowser, flagProfile string) bool {
+	return flagBrowser != "" || flagProfile != ""
+}
+
+// discoverAgentSyncWatchPaths returns the cookie DB paths that feed the merged
+// agent-sync source so fsnotify covers every enabled store.
+func discoverAgentSyncWatchPaths(enabled []string) ([]string, error) {
+	discovery := chromepaths.DiscoverForSourceWithProducts("", "", enabled)
+	if len(discovery.Stores) == 0 {
+		return nil, fmt.Errorf("agent-sync: no cookie stores found for enabled products %s", strings.Join(enabled, ", "))
+	}
+	seen := map[string]struct{}{}
+	paths := make([]string, 0, len(discovery.Stores))
+	for _, store := range discovery.Stores {
+		if _, ok := seen[store.CookiesPath]; ok {
+			continue
+		}
+		seen[store.CookiesPath] = struct{}{}
+		paths = append(paths, store.CookiesPath)
+	}
+	return paths, nil
+}
+
+// readAgentSyncCookies reads cookies for agent-sync: merged enabled_products by
+// default, or a single store when --browser/--profile pin the source.
+func readAgentSyncCookies(cfg *config.SourceConfig, flagBrowser, flagProfile string, blocklist *config.Blocklist, key []byte, skipDBSC bool, domainFilter []string, now time.Time) ([]chrome.Cookie, readStats, error) {
+	if agentSyncSourcePinned(flagBrowser, flagProfile) {
+		browserName := flagBrowser
+		if browserName == "" {
+			browserName = cfg.Browser.Name
+		}
+		dbPath, err := resolveSourceDBPath(cfg, flagBrowser, flagProfile, browserName)
+		if err != nil {
+			return nil, readStats{}, err
+		}
+		cookies, st, err := readFilteredCookies(dbPath, blocklist, key, skipDBSC, now)
+		if err != nil {
+			return nil, readStats{}, err
+		}
+		return sinkpush.FilterByHostPatterns(cookies, domainFilter), st, nil
+	}
+
+	enabled, err := config.ResolveEnabledProducts(cfg)
+	if err != nil {
+		return nil, readStats{}, err
+	}
+	cookies, st, err := readMergedExportCookies(enabled, blocklist, skipDBSC, now)
+	if err != nil {
+		return nil, readStats{}, err
+	}
+	return sinkpush.FilterByHostPatterns(cookies, domainFilter), st, nil
 }

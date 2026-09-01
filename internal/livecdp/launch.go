@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -35,6 +37,18 @@ func FindChrome() (string, error) {
 	return "", fmt.Errorf("could not find Google Chrome; install it or pass --chrome-path")
 }
 
+// LaunchOptions configures the owned Chrome launch argv.
+type LaunchOptions struct {
+	ChromePath  string
+	UserDataDir string
+	Port        int
+	Headless    bool
+	UserAgent   string
+	WindowSize  string
+	ProxyServer string
+	LeanProfile bool
+}
+
 // OwnedChrome is a Chrome instance agentcookie launched and owns. It runs on
 // a DEDICATED user-data-dir (so --remote-debugging-port is honored -- Chrome
 // 136+ only blocks the flag on the default profile dir) and a loopback debug
@@ -56,18 +70,48 @@ type OwnedChrome struct {
 // leak a "HeadlessChrome" token to bot detectors like DataDome. Automation
 // fingerprint flags are always applied to match agent-browser's worker profile.
 func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port int, headless bool, userAgent, windowSize string) (*OwnedChrome, error) {
+	return LaunchOwnedChromeWithOptions(ctx, LaunchOptions{
+		ChromePath:  chromePath,
+		UserDataDir: userDataDir,
+		Port:        port,
+		Headless:    headless,
+		UserAgent:   userAgent,
+		WindowSize:  windowSize,
+	})
+}
+
+// LaunchOwnedChromeWithOptions starts Chrome with the full owned-browser argv.
+func LaunchOwnedChromeWithOptions(ctx context.Context, opts LaunchOptions) (*OwnedChrome, error) {
+	chromePath := opts.ChromePath
 	if chromePath == "" {
 		var err error
 		if chromePath, err = FindChrome(); err != nil {
 			return nil, err
 		}
 	}
-	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("livecdp: create user-data-dir %q: %w", userDataDir, err)
+	if err := os.MkdirAll(opts.UserDataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("livecdp: create user-data-dir %q: %w", opts.UserDataDir, err)
 	}
+
+	args := BuildChromeLaunchArgs(opts)
+	cmd := exec.Command(chromePath, args...)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("livecdp: launch chrome: %w", err)
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d", opts.Port)
+	if err := waitForCDP(ctx, endpoint, 25*time.Second); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return nil, err
+	}
+	return &OwnedChrome{cmd: cmd, Port: opts.Port, Endpoint: endpoint, UserDataDir: opts.UserDataDir}, nil
+}
+
+// BuildChromeLaunchArgs assembles the owned Chrome argv from LaunchOptions.
+func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 	args := []string{
-		"--user-data-dir=" + userDataDir,
-		fmt.Sprintf("--remote-debugging-port=%d", port),
+		"--user-data-dir=" + opts.UserDataDir,
+		fmt.Sprintf("--remote-debugging-port=%d", opts.Port),
 		"--remote-debugging-address=127.0.0.1",
 		"--no-first-run",
 		"--no-default-browser-check",
@@ -75,32 +119,67 @@ func LaunchOwnedChrome(ctx context.Context, chromePath, userDataDir string, port
 		// blink automation surface match agent-browser's worker profile.
 		"--disable-blink-features=AutomationControlled",
 	}
-	if windowSize != "" {
+	if opts.WindowSize != "" {
 		// Give headless a real display size (default is 800x600, which no real
 		// desktop has); pass the actual machine's logical resolution.
-		args = append(args, "--window-size="+windowSize)
+		args = append(args, "--window-size="+opts.WindowSize)
 	}
-	if userAgent != "" {
+	if opts.UserAgent != "" {
 		// Strips the HeadlessChrome token from both navigator.userAgent and the
 		// HTTP User-Agent header (the one server-side bot checks read).
-		args = append(args, "--user-agent="+userAgent)
+		args = append(args, "--user-agent="+opts.UserAgent)
 	}
-	if headless {
+	if opts.LeanProfile {
+		args = appendLeanProfileArgs(args, opts.Port)
+	}
+	args = appendProxyServerArgs(args, opts.ProxyServer)
+	if opts.Headless {
 		args = append(args, "--headless=new")
 	}
 	args = append(args, "about:blank")
+	return args
+}
 
-	cmd := exec.Command(chromePath, args...)
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("livecdp: launch chrome: %w", err)
+func appendLeanProfileArgs(args []string, port int) []string {
+	cacheDir := filepath.Join(os.TempDir(), fmt.Sprintf("agentcookie-cache-%d", port))
+	return append(args,
+		"--disk-cache-dir="+cacheDir,
+		"--disk-cache-size=104857600",
+		"--disable-gpu-shader-disk-cache",
+		"--disable-background-networking",
+	)
+}
+
+func appendProxyServerArgs(args []string, proxyURL string) []string {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return args
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if err := waitForCDP(ctx, endpoint, 25*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, err
+	args = append(args, "--proxy-server="+proxyURL)
+	if u, err := url.Parse(proxyURL); err == nil {
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+			args = append(args, "--disable-quic")
+		}
 	}
-	return &OwnedChrome{cmd: cmd, Port: port, Endpoint: endpoint, UserDataDir: userDataDir}, nil
+	return args
+}
+
+// RedactProxyURL removes userinfo from a proxy URL for safe logging.
+func RedactProxyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<redacted>"
+	}
+	if u.User != nil {
+		host := u.Host
+		return u.Scheme + "://<redacted>@" + host
+	}
+	return u.String()
 }
 
 // Close shuts down the owned Chrome: SIGTERM, then SIGKILL if it lingers.

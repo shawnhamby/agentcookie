@@ -88,7 +88,10 @@ domains: []
 func TestAgentSyncCookieProviderRechecksRequiredPolicyEveryCycle(t *testing.T) {
 	dir := t.TempDir()
 	withConfigDir(t, dir)
-	provider := newAgentSyncCookieProvider(filepath.Join(dir, "missing-cookies.db"), nil, false, nil, "allowlist")
+	cfg := &config.SourceConfig{}
+	cfg.Browser.Name = "chrome"
+	cfg.Chrome.DBPath = filepath.Join(dir, "missing-cookies.db")
+	provider := newAgentSyncCookieProvider(cfg, nil, false, nil, "allowlist", "chrome", "")
 
 	writeCLIFile(t, filepath.Join(dir, "blocklist.yaml"), `
 version: 1
@@ -137,7 +140,7 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 	if got.BuildVersion != "1.2.3-test" {
 		t.Errorf("build_version = %q, want 1.2.3-test", got.BuildVersion)
 	}
-	for _, want := range []string{"--browser", "--capabilities-json", "--require-policy", "--user-agent"} {
+	for _, want := range []string{"--browser", "--capabilities-json", "--proxy-server", "--require-policy", "--user-agent"} {
 		if !slices.Contains(got.SupportedFlags, want) {
 			t.Errorf("supported_flags missing %q: %v", want, got.SupportedFlags)
 		}
