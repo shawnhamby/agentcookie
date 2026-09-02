@@ -198,6 +198,76 @@ func TestBuildChromeLaunchArgs_ScreenInfoAndDeviceScale(t *testing.T) {
 	})
 }
 
+func TestBuildChromeLaunchArgs_ScreenColorDepthAndWorkArea(t *testing.T) {
+	base := LaunchOptions{
+		UserDataDir: "/tmp/ac-profile",
+		Port:        9477,
+		WindowSize:  "3200,1800",
+	}
+
+	t.Run("color depth omitted when zero", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(base)
+		want := "--screen-info={3200x1800}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	})
+
+	t.Run("color depth emitted when set", func(t *testing.T) {
+		opts := base
+		opts.ScreenColorDepth = 30
+		args := BuildChromeLaunchArgs(opts)
+		want := "--screen-info={3200x1800 colorDepth=30}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	})
+
+	t.Run("work area emitted when set", func(t *testing.T) {
+		opts := base
+		opts.ScreenWorkArea = "30,88,0,0"
+		args := BuildChromeLaunchArgs(opts)
+		want := "--screen-info={3200x1800 workAreaTop=30 workAreaBottom=88 workAreaLeft=0 workAreaRight=0}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	})
+
+	t.Run("color depth and work area scale with device factor", func(t *testing.T) {
+		opts := base
+		opts.ScreenColorDepth = 30
+		opts.ScreenWorkArea = "30,88,0,0"
+		opts.DeviceScaleFactor = 1.6
+		args := BuildChromeLaunchArgs(opts)
+		want := "--screen-info={5120x2880 colorDepth=30 workAreaTop=48 workAreaBottom=141 workAreaLeft=0 workAreaRight=0}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	})
+
+	t.Run("malformed work area ignored", func(t *testing.T) {
+		opts := base
+		opts.ScreenColorDepth = 30
+		opts.ScreenWorkArea = "30,88,0"
+		args := BuildChromeLaunchArgs(opts)
+		want := "--screen-info={3200x1800 colorDepth=30}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+		for _, arg := range args {
+			if strings.Contains(arg, "workAreaTop=") {
+				t.Fatalf("unexpected work area in malformed case: %q", arg)
+			}
+		}
+	})
+
+	t.Run("invalid work area token ignored without panic", func(t *testing.T) {
+		opts := base
+		opts.ScreenWorkArea = "30,foo,0,0"
+		_ = BuildChromeLaunchArgs(opts)
+	})
+}
+
 func TestRedactProxyURL(t *testing.T) {
 	tests := []struct {
 		name string

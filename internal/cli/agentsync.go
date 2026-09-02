@@ -46,6 +46,8 @@ var (
 	agentSyncUserAgent         string
 	agentSyncWindowSize        string
 	agentSyncScreenSize        string
+	agentSyncScreenColorDepth  int
+	agentSyncScreenWorkArea    string
 	agentSyncDeviceScaleFactor float64
 	agentSyncRequirePolicy     string
 	agentSyncCapabilitiesJSON  bool
@@ -93,6 +95,8 @@ func init() {
 	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
 	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "browser window size (viewport); does not affect the reported screen when --screen-size is set")
 	agentSyncCmd.Flags().StringVar(&agentSyncScreenSize, "screen-size", "", "emulated screen for headless; the real display's logical size")
+	agentSyncCmd.Flags().IntVar(&agentSyncScreenColorDepth, "screen-color-depth", 0, "emulated screen color depth for headless (e.g. 30 for wide-gamut; omitted when 0)")
+	agentSyncCmd.Flags().StringVar(&agentSyncScreenWorkArea, "screen-work-area", "", "logical screen work-area insets top,bottom,left,right (e.g. 30,88,0,0 for menu bar and dock)")
 	agentSyncCmd.Flags().Float64Var(&agentSyncDeviceScaleFactor, "device-scale-factor", 0, "owned browser device pixel ratio (e.g. 1.6 for this machine's Retina display; default: 1, unset when 0)")
 	agentSyncCmd.Flags().StringVar(&agentSyncRequirePolicy, "require-policy", "", `refuse to start or sync unless this cookie policy is active (supported: "allowlist")`)
 	agentSyncCmd.Flags().StringVar(&agentSyncProxyServer, "proxy-server", "", "HTTP/HTTPS/SOCKS proxy URL for the owned Chrome (explicit flag only; credentials are never logged)")
@@ -190,6 +194,8 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		UserAgent:         agentSyncUserAgent,
 		WindowSize:        agentSyncWindowSize,
 		ScreenSize:        agentSyncScreenSize,
+		ScreenColorDepth:  agentSyncScreenColorDepth,
+		ScreenWorkArea:    agentSyncScreenWorkArea,
 		DeviceScaleFactor: agentSyncDeviceScaleFactor,
 		ProxyServer:       agentSyncProxyServer,
 		LeanProfile:       true,

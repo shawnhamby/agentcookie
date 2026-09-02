@@ -48,6 +48,8 @@ type LaunchOptions struct {
 	UserAgent         string
 	WindowSize        string
 	ScreenSize        string
+	ScreenColorDepth  int
+	ScreenWorkArea    string
 	DeviceScaleFactor float64
 	ProxyServer       string
 	LeanProfile       bool
@@ -134,7 +136,7 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// screen.width/height stay at 800x600 without this; headless=new only
 		// honors --window-size for the viewport. Chrome reads screen-info in
 		// physical pixels, so scale the logical size by the device factor.
-		screenInfo := screenInfoFromLogicalSize(screenSize, opts.DeviceScaleFactor)
+		screenInfo := buildScreenInfo(screenSize, opts.DeviceScaleFactor, opts.ScreenColorDepth, opts.ScreenWorkArea)
 		args = append(args, "--screen-info={"+screenInfo+"}")
 	}
 	if opts.DeviceScaleFactor > 0 {
@@ -163,6 +165,52 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 	}
 	args = append(args, "about:blank")
 	return args
+}
+
+// buildScreenInfo assembles Chrome's --screen-info value: physical WxH plus
+// optional colorDepth and work-area insets (logical top,bottom,left,right
+// scaled to physical pixels when the device factor is set).
+func buildScreenInfo(logicalSize string, scale float64, colorDepth int, workArea string) string {
+	info := screenInfoFromLogicalSize(logicalSize, scale)
+	if colorDepth > 0 {
+		info += fmt.Sprintf(" colorDepth=%d", colorDepth)
+	}
+	if insets, ok := parseScreenWorkArea(workArea); ok {
+		top := scaleScreenInset(insets[0], scale)
+		bottom := scaleScreenInset(insets[1], scale)
+		left := scaleScreenInset(insets[2], scale)
+		right := scaleScreenInset(insets[3], scale)
+		info += fmt.Sprintf(" workAreaTop=%d workAreaBottom=%d workAreaLeft=%d workAreaRight=%d",
+			top, bottom, left, right)
+	}
+	return info
+}
+
+func scaleScreenInset(logical int, scale float64) int {
+	if scale <= 0 {
+		return logical
+	}
+	return int(math.Round(float64(logical) * scale))
+}
+
+func parseScreenWorkArea(workArea string) ([4]int, bool) {
+	workArea = strings.TrimSpace(workArea)
+	if workArea == "" {
+		return [4]int{}, false
+	}
+	parts := strings.Split(workArea, ",")
+	if len(parts) != 4 {
+		return [4]int{}, false
+	}
+	var insets [4]int
+	for i, part := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			return [4]int{}, false
+		}
+		insets[i] = v
+	}
+	return insets, true
 }
 
 // screenInfoFromLogicalSize converts a logical "W,H" size into Chrome's
