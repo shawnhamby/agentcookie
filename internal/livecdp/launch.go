@@ -129,6 +129,9 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// HTTP User-Agent header (the one server-side bot checks read).
 		args = append(args, "--user-agent="+opts.UserAgent)
 	}
+	// Owned agent Chrome only reads pages/DOM (media is a download); block play()
+	// without a user gesture so cross-origin iframe players cannot autoplay.
+	args = append(args, "--autoplay-policy=user-gesture-required")
 	if opts.LeanProfile {
 		args = appendLeanProfileArgs(args, opts.Port)
 	}

@@ -32,6 +32,10 @@ func TestBuildChromeLaunchArgs_ProxyAndLean(t *testing.T) {
 				LeanProfile: test.wantLean,
 			})
 
+			if !slices.Contains(args, "--autoplay-policy=user-gesture-required") {
+				t.Fatalf("missing --autoplay-policy=user-gesture-required in args=%v", args)
+			}
+
 			hasProxy := slices.ContainsFunc(args, func(a string) bool {
 				return strings.HasPrefix(a, "--proxy-server=")
 			})
