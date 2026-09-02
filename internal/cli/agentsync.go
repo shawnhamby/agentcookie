@@ -49,6 +49,8 @@ var (
 	agentSyncScreenColorDepth  int
 	agentSyncScreenWorkArea    string
 	agentSyncDeviceScaleFactor float64
+	agentSyncColorProfile      string
+	agentSyncExtraScreens      []string
 	agentSyncRequirePolicy     string
 	agentSyncCapabilitiesJSON  bool
 	agentSyncProxyServer       string
@@ -98,6 +100,8 @@ func init() {
 	agentSyncCmd.Flags().IntVar(&agentSyncScreenColorDepth, "screen-color-depth", 0, "emulated screen color depth for headless (e.g. 30 for wide-gamut; omitted when 0)")
 	agentSyncCmd.Flags().StringVar(&agentSyncScreenWorkArea, "screen-work-area", "", "logical screen work-area insets top,bottom,left,right (e.g. 30,88,0,0 for menu bar and dock)")
 	agentSyncCmd.Flags().Float64Var(&agentSyncDeviceScaleFactor, "device-scale-factor", 0, "owned browser device pixel ratio (e.g. 1.6 for this machine's Retina display; default: 1, unset when 0)")
+	agentSyncCmd.Flags().StringVar(&agentSyncColorProfile, "force-color-profile", "", "Chrome color profile name, e.g. hdr10 or display-p3-d65, to match the real display's gamut/HDR answers")
+	agentSyncCmd.Flags().StringArrayVar(&agentSyncExtraScreens, "extra-screen", nil, "additional logical screen size W,H (repeatable; scaled like the primary)")
 	agentSyncCmd.Flags().StringVar(&agentSyncRequirePolicy, "require-policy", "", `refuse to start or sync unless this cookie policy is active (supported: "allowlist")`)
 	agentSyncCmd.Flags().StringVar(&agentSyncProxyServer, "proxy-server", "", "HTTP/HTTPS/SOCKS proxy URL for the owned Chrome (explicit flag only; credentials are never logged)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncCapabilitiesJSON, "capabilities-json", false, "print the agent-sync capability contract as JSON and exit")
@@ -197,6 +201,8 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		ScreenColorDepth:  agentSyncScreenColorDepth,
 		ScreenWorkArea:    agentSyncScreenWorkArea,
 		DeviceScaleFactor: agentSyncDeviceScaleFactor,
+		ColorProfile:      agentSyncColorProfile,
+		ExtraScreens:      agentSyncExtraScreens,
 		ProxyServer:       agentSyncProxyServer,
 		LeanProfile:       true,
 	})

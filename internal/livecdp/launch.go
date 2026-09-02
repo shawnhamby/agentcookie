@@ -51,6 +51,8 @@ type LaunchOptions struct {
 	ScreenColorDepth  int
 	ScreenWorkArea    string
 	DeviceScaleFactor float64
+	ColorProfile      string
+	ExtraScreens      []string
 	ProxyServer       string
 	LeanProfile       bool
 }
@@ -136,11 +138,18 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// screen.width/height stay at 800x600 without this; headless=new only
 		// honors --window-size for the viewport. Chrome reads screen-info in
 		// physical pixels, so scale the logical size by the device factor.
-		screenInfo := buildScreenInfo(screenSize, opts.DeviceScaleFactor, opts.ScreenColorDepth, opts.ScreenWorkArea)
-		args = append(args, "--screen-info={"+screenInfo+"}")
+		// Extra displays are sibling {WxH} groups; props stay on the primary.
+		screenInfo := "{" + buildScreenInfo(screenSize, opts.DeviceScaleFactor, opts.ScreenColorDepth, opts.ScreenWorkArea) + "}"
+		for _, extra := range opts.ExtraScreens {
+			screenInfo += "{" + screenInfoFromLogicalSize(extra, opts.DeviceScaleFactor) + "}"
+		}
+		args = append(args, "--screen-info="+screenInfo)
 	}
 	if opts.DeviceScaleFactor > 0 {
 		args = append(args, fmt.Sprintf("--force-device-scale-factor=%g", opts.DeviceScaleFactor))
+	}
+	if opts.ColorProfile != "" {
+		args = append(args, "--force-color-profile="+opts.ColorProfile)
 	}
 	if opts.UserAgent != "" {
 		// Strips the HeadlessChrome token from both navigator.userAgent and the

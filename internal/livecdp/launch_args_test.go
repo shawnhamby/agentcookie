@@ -196,6 +196,59 @@ func TestBuildChromeLaunchArgs_ScreenInfoAndDeviceScale(t *testing.T) {
 			t.Fatalf("missing --force-device-scale-factor=1.6 in args=%v", set)
 		}
 	})
+
+	t.Run("color profile only when set", func(t *testing.T) {
+		unset := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+		})
+		for _, arg := range unset {
+			if strings.HasPrefix(arg, "--force-color-profile=") {
+				t.Fatalf("unexpected %q when ColorProfile unset; args=%v", arg, unset)
+			}
+		}
+
+		set := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:  "/tmp/ac-profile",
+			Port:         9477,
+			ColorProfile: "hdr10",
+		})
+		if !slices.Contains(set, "--force-color-profile=hdr10") {
+			t.Fatalf("missing --force-color-profile=hdr10 in args=%v", set)
+		}
+	})
+
+	t.Run("extra screens appended in order and scaled", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:       "/tmp/ac-profile",
+			Port:              9477,
+			WindowSize:        "3200,1800",
+			DeviceScaleFactor: 1.6,
+			ScreenColorDepth:  30,
+			ExtraScreens:      []string{"4000,2250", "3200,1800"},
+		})
+		want := "--screen-info={5120x2880 colorDepth=30}{6400x3600}{5120x2880}"
+		if !slices.Contains(args, want) {
+			t.Fatalf("missing %q in args=%v", want, args)
+		}
+	})
+
+	t.Run("empty extra screens leave primary only", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:  "/tmp/ac-profile",
+			Port:         9477,
+			WindowSize:   "3200,1800",
+			ExtraScreens: nil,
+		})
+		if !slices.Contains(args, "--screen-info={3200x1800}") {
+			t.Fatalf("missing primary-only --screen-info in args=%v", args)
+		}
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--screen-info=") && strings.Count(arg, "{") != 1 {
+				t.Fatalf("unexpected multi-screen --screen-info when ExtraScreens empty: %q", arg)
+			}
+		}
+	})
 }
 
 func TestBuildChromeLaunchArgs_ScreenColorDepthAndWorkArea(t *testing.T) {
