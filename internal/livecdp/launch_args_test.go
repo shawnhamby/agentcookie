@@ -35,6 +35,23 @@ func TestBuildChromeLaunchArgs_ProxyAndLean(t *testing.T) {
 			if !slices.Contains(args, "--autoplay-policy=user-gesture-required") {
 				t.Fatalf("missing --autoplay-policy=user-gesture-required in args=%v", args)
 			}
+			if !slices.Contains(args, "--mute-audio") {
+				t.Fatalf("missing --mute-audio in args=%v", args)
+			}
+			disableFeatures := slices.DeleteFunc(slices.Clone(args), func(a string) bool {
+				return !strings.HasPrefix(a, "--disable-features=")
+			})
+			if len(disableFeatures) != 1 {
+				t.Fatalf("want exactly one --disable-features= arg, got %d in args=%v", len(disableFeatures), args)
+			}
+			for _, feature := range []string{
+				"PreloadMediaEngagementData",
+				"MediaEngagementBypassAutoplayPolicies",
+			} {
+				if !strings.Contains(disableFeatures[0], feature) {
+					t.Fatalf("missing %q in %q; args=%v", feature, disableFeatures[0], args)
+				}
+			}
 
 			hasProxy := slices.ContainsFunc(args, func(a string) bool {
 				return strings.HasPrefix(a, "--proxy-server=")

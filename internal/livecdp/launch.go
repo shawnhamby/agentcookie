@@ -131,7 +131,13 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 	}
 	// Owned agent Chrome only reads pages/DOM (media is a download); block play()
 	// without a user gesture so cross-origin iframe players cannot autoplay.
-	args = append(args, "--autoplay-policy=user-gesture-required")
+	// MEI preload/bypass can ignore that policy; headless=new still routes audio
+	// to the system device, so mute at launch for deterministic silent runs.
+	args = append(args,
+		"--autoplay-policy=user-gesture-required",
+		"--mute-audio",
+		"--disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies",
+	)
 	if opts.LeanProfile {
 		args = appendLeanProfileArgs(args, opts.Port)
 	}
