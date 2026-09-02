@@ -3,11 +3,13 @@ package livecdp
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -39,15 +41,15 @@ func FindChrome() (string, error) {
 
 // LaunchOptions configures the owned Chrome launch argv.
 type LaunchOptions struct {
-	ChromePath  string
-	UserDataDir string
-	Port        int
-	Headless    bool
-	UserAgent   string
+	ChromePath        string
+	UserDataDir       string
+	Port              int
+	Headless          bool
+	UserAgent         string
 	WindowSize        string
 	DeviceScaleFactor float64
 	ProxyServer       string
-	LeanProfile bool
+	LeanProfile       bool
 }
 
 // OwnedChrome is a Chrome instance agentcookie launched and owns. It runs on
@@ -125,8 +127,9 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// desktop has); pass the actual machine's logical resolution.
 		args = append(args, "--window-size="+opts.WindowSize)
 		// screen.width/height stay at 800x600 without this; headless=new only
-		// honors --window-size for the viewport.
-		screenInfo := strings.ReplaceAll(opts.WindowSize, ",", "x")
+		// honors --window-size for the viewport. Chrome reads screen-info in
+		// physical pixels, so scale the logical size by the device factor.
+		screenInfo := screenInfoFromWindowSize(opts.WindowSize, opts.DeviceScaleFactor)
 		args = append(args, "--screen-info={"+screenInfo+"}")
 	}
 	if opts.DeviceScaleFactor > 0 {
@@ -155,6 +158,21 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 	}
 	args = append(args, "about:blank")
 	return args
+}
+
+// screenInfoFromWindowSize converts a logical "W,H" window size into Chrome's
+// physical-pixel "WxH" screen-info form, scaling by the device factor when set.
+func screenInfoFromWindowSize(windowSize string, scale float64) string {
+	parts := strings.SplitN(windowSize, ",", 2)
+	if len(parts) != 2 || scale <= 0 {
+		return strings.ReplaceAll(windowSize, ",", "x")
+	}
+	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errW != nil || errH != nil {
+		return strings.ReplaceAll(windowSize, ",", "x")
+	}
+	return fmt.Sprintf("%dx%d", int(math.Round(float64(w)*scale)), int(math.Round(float64(h)*scale)))
 }
 
 func appendLeanProfileArgs(args []string, port int) []string {

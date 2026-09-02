@@ -105,6 +105,18 @@ func TestBuildChromeLaunchArgs_ScreenInfoAndDeviceScale(t *testing.T) {
 		}
 	})
 
+	t.Run("screen-info scales to physical pixels", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:       "/tmp/ac-profile",
+			Port:              9477,
+			WindowSize:        "3200,1800",
+			DeviceScaleFactor: 1.6,
+		})
+		if !slices.Contains(args, "--screen-info={5120x2880}") {
+			t.Fatalf("missing scaled --screen-info in args=%v", args)
+		}
+	})
+
 	t.Run("empty window size omits screen-info", func(t *testing.T) {
 		args := BuildChromeLaunchArgs(LaunchOptions{
 			UserDataDir: "/tmp/ac-profile",
