@@ -44,8 +44,9 @@ type LaunchOptions struct {
 	Port        int
 	Headless    bool
 	UserAgent   string
-	WindowSize  string
-	ProxyServer string
+	WindowSize        string
+	DeviceScaleFactor float64
+	ProxyServer       string
 	LeanProfile bool
 }
 
@@ -123,6 +124,13 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// Give headless a real display size (default is 800x600, which no real
 		// desktop has); pass the actual machine's logical resolution.
 		args = append(args, "--window-size="+opts.WindowSize)
+		// screen.width/height stay at 800x600 without this; headless=new only
+		// honors --window-size for the viewport.
+		screenInfo := strings.ReplaceAll(opts.WindowSize, ",", "x")
+		args = append(args, "--screen-info={"+screenInfo+"}")
+	}
+	if opts.DeviceScaleFactor > 0 {
+		args = append(args, fmt.Sprintf("--force-device-scale-factor=%g", opts.DeviceScaleFactor))
 	}
 	if opts.UserAgent != "" {
 		// Strips the HeadlessChrome token from both navigator.userAgent and the

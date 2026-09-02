@@ -45,6 +45,7 @@ var (
 	agentSyncVerbose          bool
 	agentSyncUserAgent        string
 	agentSyncWindowSize       string
+	agentSyncDeviceScaleFactor float64
 	agentSyncRequirePolicy    string
 	agentSyncCapabilitiesJSON bool
 	agentSyncProxyServer      string
@@ -89,7 +90,8 @@ func init() {
 	agentSyncCmd.Flags().StringVar(&agentSyncProfile, "profile", "", "pin to one source profile dir (requires single-store pin with --browser or alone)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncVerbose, "verbose", false, "log per-cycle counts to stderr")
 	agentSyncCmd.Flags().StringVar(&agentSyncUserAgent, "user-agent", "", "override the owned browser User-Agent (pass a real Chrome UA to avoid a HeadlessChrome token; default: Chrome's own)")
-	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; default: Chrome's 800x600 headless)")
+	agentSyncCmd.Flags().StringVar(&agentSyncWindowSize, "window-size", "", "owned browser window size WxH (e.g. 1728,1117 for this machine's real display; also sets emulated screen.width/height; default: Chrome's 800x600 headless)")
+	agentSyncCmd.Flags().Float64Var(&agentSyncDeviceScaleFactor, "device-scale-factor", 0, "owned browser device pixel ratio (e.g. 1.6 for this machine's Retina display; default: 1, unset when 0)")
 	agentSyncCmd.Flags().StringVar(&agentSyncRequirePolicy, "require-policy", "", `refuse to start or sync unless this cookie policy is active (supported: "allowlist")`)
 	agentSyncCmd.Flags().StringVar(&agentSyncProxyServer, "proxy-server", "", "HTTP/HTTPS/SOCKS proxy URL for the owned Chrome (explicit flag only; credentials are never logged)")
 	agentSyncCmd.Flags().BoolVar(&agentSyncCapabilitiesJSON, "capabilities-json", false, "print the agent-sync capability contract as JSON and exit")
@@ -184,8 +186,9 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		Port:        agentSyncPort,
 		Headless:    !agentSyncHeaded,
 		UserAgent:   agentSyncUserAgent,
-		WindowSize:  agentSyncWindowSize,
-		ProxyServer: agentSyncProxyServer,
+		WindowSize:        agentSyncWindowSize,
+		DeviceScaleFactor: agentSyncDeviceScaleFactor,
+		ProxyServer:       agentSyncProxyServer,
 		LeanProfile: true,
 	})
 	if err != nil {

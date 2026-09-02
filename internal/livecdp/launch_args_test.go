@@ -90,6 +90,55 @@ func TestBuildChromeLaunchArgs_ProxyAndLean(t *testing.T) {
 	}
 }
 
+func TestBuildChromeLaunchArgs_ScreenInfoAndDeviceScale(t *testing.T) {
+	t.Run("window size emits screen-info", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+			WindowSize:  "3200,1800",
+		})
+		if !slices.Contains(args, "--window-size=3200,1800") {
+			t.Fatalf("missing --window-size in args=%v", args)
+		}
+		if !slices.Contains(args, "--screen-info={3200x1800}") {
+			t.Fatalf("missing --screen-info in args=%v", args)
+		}
+	})
+
+	t.Run("empty window size omits screen-info", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+		})
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--screen-info=") {
+				t.Fatalf("unexpected %q when WindowSize empty; args=%v", arg, args)
+			}
+		}
+	})
+
+	t.Run("device scale factor only when set", func(t *testing.T) {
+		unset := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+		})
+		for _, arg := range unset {
+			if strings.HasPrefix(arg, "--force-device-scale-factor=") {
+				t.Fatalf("unexpected %q when DeviceScaleFactor unset; args=%v", arg, unset)
+			}
+		}
+
+		set := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:       "/tmp/ac-profile",
+			Port:              9477,
+			DeviceScaleFactor: 1.6,
+		})
+		if !slices.Contains(set, "--force-device-scale-factor=1.6") {
+			t.Fatalf("missing --force-device-scale-factor=1.6 in args=%v", set)
+		}
+	})
+}
+
 func TestRedactProxyURL(t *testing.T) {
 	tests := []struct {
 		name string
