@@ -47,6 +47,7 @@ type LaunchOptions struct {
 	Headless          bool
 	UserAgent         string
 	WindowSize        string
+	ScreenSize        string
 	DeviceScaleFactor float64
 	ProxyServer       string
 	LeanProfile       bool
@@ -123,13 +124,17 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		"--disable-blink-features=AutomationControlled",
 	}
 	if opts.WindowSize != "" {
-		// Give headless a real display size (default is 800x600, which no real
-		// desktop has); pass the actual machine's logical resolution.
 		args = append(args, "--window-size="+opts.WindowSize)
+	}
+	screenSize := opts.ScreenSize
+	if screenSize == "" {
+		screenSize = opts.WindowSize
+	}
+	if screenSize != "" {
 		// screen.width/height stay at 800x600 without this; headless=new only
 		// honors --window-size for the viewport. Chrome reads screen-info in
 		// physical pixels, so scale the logical size by the device factor.
-		screenInfo := screenInfoFromWindowSize(opts.WindowSize, opts.DeviceScaleFactor)
+		screenInfo := screenInfoFromLogicalSize(screenSize, opts.DeviceScaleFactor)
 		args = append(args, "--screen-info={"+screenInfo+"}")
 	}
 	if opts.DeviceScaleFactor > 0 {
@@ -160,17 +165,17 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 	return args
 }
 
-// screenInfoFromWindowSize converts a logical "W,H" window size into Chrome's
+// screenInfoFromLogicalSize converts a logical "W,H" size into Chrome's
 // physical-pixel "WxH" screen-info form, scaling by the device factor when set.
-func screenInfoFromWindowSize(windowSize string, scale float64) string {
-	parts := strings.SplitN(windowSize, ",", 2)
+func screenInfoFromLogicalSize(logicalSize string, scale float64) string {
+	parts := strings.SplitN(logicalSize, ",", 2)
 	if len(parts) != 2 || scale <= 0 {
-		return strings.ReplaceAll(windowSize, ",", "x")
+		return strings.ReplaceAll(logicalSize, ",", "x")
 	}
 	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
 	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if errW != nil || errH != nil {
-		return strings.ReplaceAll(windowSize, ",", "x")
+		return strings.ReplaceAll(logicalSize, ",", "x")
 	}
 	return fmt.Sprintf("%dx%d", int(math.Round(float64(w)*scale)), int(math.Round(float64(h)*scale)))
 }

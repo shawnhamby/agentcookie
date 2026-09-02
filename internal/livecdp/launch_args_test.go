@@ -117,6 +117,53 @@ func TestBuildChromeLaunchArgs_ScreenInfoAndDeviceScale(t *testing.T) {
 		}
 	})
 
+	t.Run("screen-size and window-size independent", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+			WindowSize:  "1600,1000",
+			ScreenSize:  "3200,1800",
+		})
+		if !slices.Contains(args, "--window-size=1600,1000") {
+			t.Fatalf("missing --window-size in args=%v", args)
+		}
+		if !slices.Contains(args, "--screen-info={3200x1800}") {
+			t.Fatalf("missing --screen-info from ScreenSize in args=%v", args)
+		}
+	})
+
+	t.Run("screen-size scales to physical pixels", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir:       "/tmp/ac-profile",
+			Port:              9477,
+			WindowSize:        "1600,1000",
+			ScreenSize:        "3200,1800",
+			DeviceScaleFactor: 1.6,
+		})
+		if !slices.Contains(args, "--window-size=1600,1000") {
+			t.Fatalf("missing --window-size in args=%v", args)
+		}
+		if !slices.Contains(args, "--screen-info={5120x2880}") {
+			t.Fatalf("missing scaled --screen-info from ScreenSize in args=%v", args)
+		}
+	})
+
+	t.Run("screen-size alone omits window-size", func(t *testing.T) {
+		args := BuildChromeLaunchArgs(LaunchOptions{
+			UserDataDir: "/tmp/ac-profile",
+			Port:        9477,
+			ScreenSize:  "3200,1800",
+		})
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--window-size=") {
+				t.Fatalf("unexpected %q when WindowSize empty; args=%v", arg, args)
+			}
+		}
+		if !slices.Contains(args, "--screen-info={3200x1800}") {
+			t.Fatalf("missing --screen-info in args=%v", args)
+		}
+	})
+
 	t.Run("empty window size omits screen-info", func(t *testing.T) {
 		args := BuildChromeLaunchArgs(LaunchOptions{
 			UserDataDir: "/tmp/ac-profile",
