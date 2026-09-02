@@ -232,6 +232,7 @@ func runAgentSync(cmd *cobra.Command, args []string) error {
 		syncLog("proxy-server %s", livecdp.RedactProxyURL(agentSyncProxyServer))
 	}
 	syncer := livecdp.NewSyncer(ctx, browser, provider, syncLog)
+	syncer.EnableAgentSyncInject()
 
 	// Initial inject so the owned browser's default context is logged in
 	// immediately; also surfaces connection/cookie errors at startup.

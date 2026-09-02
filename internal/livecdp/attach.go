@@ -45,11 +45,13 @@ type CookieProvider func() ([]chrome.Cookie, error)
 // owned by the allocator and survives page-target churn, so injection keeps
 // working through connect/disconnect cycles.
 type Syncer struct {
-	ctx      context.Context
-	browser  cdp.Executor
-	provider CookieProvider
+	ctx       context.Context
+	browser   cdp.Executor
+	provider  CookieProvider
 	pollEvery time.Duration
 	log       func(format string, args ...any)
+
+	agentSyncInject *AgentSyncInjectOpts
 
 	mu   sync.Mutex
 	seen map[cdp.BrowserContextID]bool
@@ -69,6 +71,15 @@ func NewSyncer(ctx context.Context, browser cdp.Executor, provider CookieProvide
 		pollEvery: DefaultPollInterval,
 		log:       log,
 		seen:      map[cdp.BrowserContextID]bool{},
+	}
+}
+
+// EnableAgentSyncInject turns on clearance exclusion and downgrade protection
+// for agent-sync's ReinjectAll and new-context poll paths.
+func (s *Syncer) EnableAgentSyncInject() {
+	s.agentSyncInject = &AgentSyncInjectOpts{
+		ExcludeClearance: true,
+		SkipDowngrade:    true,
 	}
 }
 
@@ -102,7 +113,7 @@ func (s *Syncer) ReinjectAll() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("livecdp: provider: %w", err)
 	}
-	return injectAll(s.ctx, s.browser, cookies)
+	return s.injectAllFiltered(cookies)
 }
 
 // syncNewContexts injects only into browser contexts not yet seen.
@@ -113,6 +124,8 @@ func (s *Syncer) syncNewContexts() (int, error) {
 	}
 	var cookies []chrome.Cookie
 	loaded := false
+	cache := newSinkCookieCache()
+	var clearanceTotal, downgradeTotal int
 	n := 0
 	for _, id := range ids {
 		s.mu.Lock()
@@ -128,7 +141,16 @@ func (s *Syncer) syncNewContexts() (int, error) {
 			}
 			loaded = true
 		}
-		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], cookies); err != nil {
+		toInject, clearanceSkipped, downgradeSkipped, err := filterCookiesForContext(
+			s.ctx, s.browser, id, explicit[id], cookies, s.agentSyncInject, cache,
+		)
+		if err != nil {
+			s.log("livecdp: filter context %q: %v", id, err)
+			continue
+		}
+		clearanceTotal += clearanceSkipped
+		downgradeTotal += downgradeSkipped
+		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], toInject); err != nil {
 			s.log("livecdp: inject context %q: %v", id, err)
 			continue
 		}
@@ -136,6 +158,9 @@ func (s *Syncer) syncNewContexts() (int, error) {
 		s.seen[id] = true
 		s.mu.Unlock()
 		n++
+	}
+	if clearanceTotal > 0 || downgradeTotal > 0 {
+		s.log("livecdp: inject skipped clearance=%d downgrade=%d", clearanceTotal, downgradeTotal)
 	}
 	return n, nil
 }
@@ -170,6 +195,42 @@ func injectAll(ctx context.Context, browser cdp.Executor, cookies []chrome.Cooki
 			continue
 		}
 		n++
+	}
+	return n, firstErr
+}
+
+func (s *Syncer) injectAllFiltered(cookies []chrome.Cookie) (int, error) {
+	ids, explicit, err := injectableContexts(s.ctx, s.browser)
+	if err != nil {
+		return 0, err
+	}
+	cache := newSinkCookieCache()
+	var clearanceTotal, downgradeTotal int
+	n := 0
+	var firstErr error
+	for _, id := range ids {
+		toInject, clearanceSkipped, downgradeSkipped, err := filterCookiesForContext(
+			s.ctx, s.browser, id, explicit[id], cookies, s.agentSyncInject, cache,
+		)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			s.log("livecdp: filter context %q: %v", id, err)
+			continue
+		}
+		clearanceTotal += clearanceSkipped
+		downgradeTotal += downgradeSkipped
+		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], toInject); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		n++
+	}
+	if clearanceTotal > 0 || downgradeTotal > 0 {
+		s.log("livecdp: inject skipped clearance=%d downgrade=%d", clearanceTotal, downgradeTotal)
 	}
 	return n, firstErr
 }

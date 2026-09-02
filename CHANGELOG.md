@@ -45,6 +45,12 @@ Download from [GitHub Releases](https://github.com/mvanhorn/agentcookie/releases
 
 ## [Unreleased]
 
+### agent-sync clearance cookies
+
+agent-sync no longer injects bot-clearance cookies (DataDome, Cloudflare,
+PerimeterX, Akamai) from the daily Chrome source, and skips injecting when the
+owned profile already holds a fresher cookie for the same name, domain, and path.
+
 ### Cookie allowlist policy
 
 `blocklist.yaml` now accepts an explicit `policy` field. Omitted policy and
