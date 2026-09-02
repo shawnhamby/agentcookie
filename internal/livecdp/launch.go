@@ -156,12 +156,13 @@ func BuildChromeLaunchArgs(opts LaunchOptions) []string {
 		// HTTP User-Agent header (the one server-side bot checks read).
 		args = append(args, "--user-agent="+opts.UserAgent)
 	}
-	// Owned agent Chrome only reads pages/DOM (media is a download); block play()
-	// without a user gesture so cross-origin iframe players cannot autoplay.
+	// Owned agent Chrome only reads pages/DOM (media is a download); require a
+	// user activation on each document so players cannot autoplay: the gesture
+	// policy treats any earlier click on the domain (e.g. a login) as permission.
 	// MEI preload/bypass can ignore that policy; headless=new still routes audio
 	// to the system device, so mute at launch for deterministic silent runs.
 	args = append(args,
-		"--autoplay-policy=user-gesture-required",
+		"--autoplay-policy=document-user-activation-required",
 		"--mute-audio",
 		"--disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies",
 	)

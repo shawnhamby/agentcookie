@@ -32,8 +32,8 @@ func TestBuildChromeLaunchArgs_ProxyAndLean(t *testing.T) {
 				LeanProfile: test.wantLean,
 			})
 
-			if !slices.Contains(args, "--autoplay-policy=user-gesture-required") {
-				t.Fatalf("missing --autoplay-policy=user-gesture-required in args=%v", args)
+			if !slices.Contains(args, "--autoplay-policy=document-user-activation-required") {
+				t.Fatalf("missing --autoplay-policy=document-user-activation-required in args=%v", args)
 			}
 			if !slices.Contains(args, "--mute-audio") {
 				t.Fatalf("missing --mute-audio in args=%v", args)
