@@ -97,11 +97,11 @@ func indexSinkCookies(sink []sinkCookie) map[string]sinkCookie {
 	return idx
 }
 
-// sinkHasLaterExpiry reports whether the sink cookie outlives the source row.
-// Session source cookies always inject regardless of sink state.
-func sinkHasLaterExpiry(source chrome.Cookie, sink sinkCookie) bool {
+// sinkShouldWin reports whether an existing sink cookie should survive re-injection.
+// Session source rows never replace a matching sink-authored cookie.
+func sinkShouldWin(source chrome.Cookie, sink sinkCookie) bool {
 	if source.ExpiresUTC == 0 {
-		return false
+		return true
 	}
 	if sink.ExpiresUTC == 0 {
 		return false
@@ -126,7 +126,7 @@ func filterClearanceCookies(source []chrome.Cookie) (filtered []chrome.Cookie, s
 func filterDowngradeCookies(source []chrome.Cookie, sink []sinkCookie) (filtered []chrome.Cookie, skipped int) {
 	idx := indexSinkCookies(sink)
 	for _, c := range source {
-		if existing, ok := idx[cookieIdentityKey(c.Name, c.HostKey, c.Path)]; ok && sinkHasLaterExpiry(c, existing) {
+		if existing, ok := idx[cookieIdentityKey(c.Name, c.HostKey, c.Path)]; ok && sinkShouldWin(c, existing) {
 			skipped++
 			continue
 		}

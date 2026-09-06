@@ -49,7 +49,8 @@ Download from [GitHub Releases](https://github.com/mvanhorn/agentcookie/releases
 
 agent-sync no longer injects bot-clearance cookies (DataDome, Cloudflare,
 PerimeterX, Akamai) from the daily Chrome source, and skips injecting when the
-owned profile already holds a fresher cookie for the same name, domain, and path.
+owned profile already holds a fresher persistent cookie or any matching cookie
+for a session source row with the same name, domain, and path.
 
 ### Cookie allowlist policy
 

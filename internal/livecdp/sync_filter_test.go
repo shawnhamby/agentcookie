@@ -42,71 +42,61 @@ func TestFilterClearanceCookies(t *testing.T) {
 func TestFilterDowngradeCookies(t *testing.T) {
 	const earlier = int64(13300000000000000)
 	const later = int64(13400000000000000)
-	const equal = int64(13350000000000000)
 
-	source := []chrome.Cookie{
-		{HostKey: ".example.com", Name: "a", Value: "src", Path: "/", ExpiresUTC: earlier},
-		{HostKey: "example.com", Name: "b", Value: "src", Path: "/app", ExpiresUTC: equal},
-		{HostKey: ".example.com", Name: "c", Value: "src", Path: "/", ExpiresUTC: later},
-		{HostKey: ".example.com", Name: "csrf", Value: "src", Path: "/", ExpiresUTC: 0},
-	}
-	sink := []sinkCookie{
-		{Name: "a", Domain: "example.com", Path: "/", ExpiresUTC: later},
-		{Name: "b", Domain: ".example.com", Path: "/app", ExpiresUTC: equal},
-		{Name: "c", Domain: ".example.com", Path: "/", ExpiresUTC: earlier},
-		{Name: "csrf", Domain: ".example.com", Path: "/", ExpiresUTC: later},
+	tests := []struct {
+		name        string
+		source      chrome.Cookie
+		sink        []sinkCookie
+		wantSkipped int
+	}{
+		{
+			name:        "session source versus sink session",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/"},
+			sink:        []sinkCookie{{Name: "auth", Domain: "example.com", Path: "/"}},
+			wantSkipped: 1,
+		},
+		{
+			name:        "session source versus sink persistent",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/"},
+			sink:        []sinkCookie{{Name: "auth", Domain: "example.com", Path: "/", ExpiresUTC: later}},
+			wantSkipped: 1,
+		},
+		{
+			name:        "persistent source versus older sink",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/", ExpiresUTC: later},
+			sink:        []sinkCookie{{Name: "auth", Domain: "example.com", Path: "/", ExpiresUTC: earlier}},
+			wantSkipped: 0,
+		},
+		{
+			name:        "persistent source versus newer sink",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/", ExpiresUTC: earlier},
+			sink:        []sinkCookie{{Name: "auth", Domain: "example.com", Path: "/", ExpiresUTC: later}},
+			wantSkipped: 1,
+		},
+		{
+			name:        "no sink match",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/", ExpiresUTC: earlier},
+			sink:        []sinkCookie{{Name: "other", Domain: "example.com", Path: "/", ExpiresUTC: later}},
+			wantSkipped: 0,
+		},
+		{
+			name:        "persistent source versus equal sink",
+			source:      chrome.Cookie{HostKey: ".example.com", Name: "auth", Path: "/", ExpiresUTC: earlier},
+			sink:        []sinkCookie{{Name: "auth", Domain: "example.com", Path: "/", ExpiresUTC: earlier}},
+			wantSkipped: 0,
+		},
 	}
 
-	got, skipped := filterDowngradeCookies(source, sink)
-	if skipped != 1 {
-		t.Fatalf("downgrade skipped = %d, want 1 (only cookie a)", skipped)
-	}
-	if len(got) != 3 {
-		t.Fatalf("filtered len = %d, want 3", len(got))
-	}
-	names := map[string]bool{}
-	for _, c := range got {
-		names[c.Name] = true
-	}
-	for _, want := range []string{"b", "c", "csrf"} {
-		if !names[want] {
-			t.Errorf("expected cookie %q in filtered set", want)
-		}
-	}
-	if names["a"] {
-		t.Error("cookie a should be skipped (sink has later expiry)")
-	}
-}
-
-func TestSinkHasLaterExpiry(t *testing.T) {
-	const earlier = int64(13300000000000000)
-	const later = int64(13400000000000000)
-
-	if sinkHasLaterExpiry(
-		chrome.Cookie{ExpiresUTC: earlier},
-		sinkCookie{ExpiresUTC: later},
-	) {
-		// ok
-	} else {
-		t.Error("sink with later expiry should trigger skip")
-	}
-	if sinkHasLaterExpiry(
-		chrome.Cookie{ExpiresUTC: later},
-		sinkCookie{ExpiresUTC: earlier},
-	) {
-		t.Error("sink with earlier expiry should not trigger skip")
-	}
-	if sinkHasLaterExpiry(
-		chrome.Cookie{ExpiresUTC: earlier},
-		sinkCookie{ExpiresUTC: earlier},
-	) {
-		t.Error("equal expiry should not trigger skip")
-	}
-	if sinkHasLaterExpiry(
-		chrome.Cookie{ExpiresUTC: 0},
-		sinkCookie{ExpiresUTC: later},
-	) {
-		t.Error("session source should always inject")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, skipped := filterDowngradeCookies([]chrome.Cookie{tt.source}, tt.sink)
+			if skipped != tt.wantSkipped {
+				t.Fatalf("downgrade skipped = %d, want %d", skipped, tt.wantSkipped)
+			}
+			if len(got) != 1-tt.wantSkipped {
+				t.Fatalf("filtered len = %d, want %d", len(got), 1-tt.wantSkipped)
+			}
+		})
 	}
 }
 
