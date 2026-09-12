@@ -326,6 +326,10 @@ const (
 type agentSyncConn struct {
 	browser *chromedp.Browser
 	lost    <-chan struct{}
+	// retired is closed before this connection is torn down on purpose, so its
+	// own lost-connection watcher does not ask for the rebuild that is already
+	// under way.
+	retired chan struct{}
 	close   func()
 }
 
@@ -352,6 +356,7 @@ func connectAgentSyncBrowser(ctx context.Context, endpoint string, errLog, log f
 	return &agentSyncConn{
 		browser: browser,
 		lost:    browser.LostConnection,
+		retired: make(chan struct{}),
 		close: func() {
 			browserCancel()
 			allocCancel()
@@ -405,6 +410,7 @@ func (s *agentSyncSupervisor) closeConn() {
 	s.conn = nil
 	s.mu.Unlock()
 	if conn != nil {
+		close(conn.retired)
 		conn.close()
 	}
 }
@@ -420,7 +426,12 @@ func (s *agentSyncSupervisor) watchLostConnection(ctx context.Context) {
 	go func() {
 		select {
 		case <-conn.lost:
-			s.requestReconnect("browser websocket closed")
+			select {
+			case <-conn.retired:
+			default:
+				s.requestReconnect("browser websocket closed")
+			}
+		case <-conn.retired:
 		case <-ctx.Done():
 		}
 	}()
@@ -464,6 +475,12 @@ func (s *agentSyncSupervisor) reconnectLoop(ctx context.Context) error {
 			s.setConn(conn)
 			s.watchLostConnection(ctx)
 			s.syncer.SetBrowser(conn.browser)
+			// Requests raised while the connection was down name the socket
+			// this one replaces; honoring them would tear it straight back down.
+			select {
+			case <-s.reconnect:
+			default:
+			}
 			s.logf("reconnected to %s after %d attempt(s)", s.endpoint, attempt)
 			return nil
 		}
