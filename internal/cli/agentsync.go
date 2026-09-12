@@ -317,8 +317,8 @@ const agentSyncPushTimeout = 60 * time.Second
 const (
 	agentSyncReconnectMinBackoff = 1 * time.Second
 	agentSyncReconnectMaxBackoff = 30 * time.Second
-	// agentSyncReconnectMaxFailures is when a dead websocket stops looking
-	// like a transient peer close and starts looking like a gone browser.
+	// agentSyncReconnectMaxFailures is when a rejected dial stops looking like
+	// a transient peer close and starts looking like a gone browser.
 	agentSyncReconnectMaxFailures = 5
 )
 
@@ -448,11 +448,12 @@ func (s *agentSyncSupervisor) run(ctx context.Context) {
 	}
 }
 
-// reconnectLoop dials the same endpoint with backoff. It gives up only when
-// the owned Chrome is gone or the endpoint refuses repeatedly, and the caller
+// reconnectLoop dials the same endpoint with backoff. It gives up only when the
+// owned Chrome is gone or the endpoint keeps rejecting the dial, and the caller
 // then exits non-zero so the launcher relaunches a clean pair on next ensure.
 func (s *agentSyncSupervisor) reconnectLoop(ctx context.Context) error {
 	backoff := agentSyncReconnectMinBackoff
+	rejected := 0
 	for attempt := 1; ; attempt++ {
 		if s.chrome.Exited() {
 			return fmt.Errorf("agent-sync: owned Chrome exited; cannot reconnect to %s", s.endpoint)
@@ -467,8 +468,17 @@ func (s *agentSyncSupervisor) reconnectLoop(ctx context.Context) error {
 			return nil
 		}
 		s.logf("reconnect attempt %d failed: %v", attempt, err)
-		if attempt >= agentSyncReconnectMaxFailures {
-			return fmt.Errorf("agent-sync: reconnect to %s failed %d consecutive times: %w", s.endpoint, attempt, err)
+		// A dial that times out means Chrome is running but not answering (a
+		// stopped or wedged process). Giving up there would tear down a live
+		// browser holding the agent sessions this daemon exists to keep, so
+		// only a rejected dial counts toward the give-up budget.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+			s.logf("owned Chrome is alive but not answering %s; retrying without giving up", s.endpoint)
+		} else {
+			rejected++
+			if rejected >= agentSyncReconnectMaxFailures {
+				return fmt.Errorf("agent-sync: reconnect to %s rejected %d consecutive times: %w", s.endpoint, rejected, err)
+			}
 		}
 		select {
 		case <-ctx.Done():

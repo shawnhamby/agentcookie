@@ -125,7 +125,10 @@ func (s *Syncer) Run(ctx context.Context) error {
 	tick := func() {
 		tickCtx, cancel := context.WithTimeout(ctx, DefaultPollTimeout)
 		defer cancel()
-		if n, err := s.syncNewContexts(tickCtx); err != nil {
+		// A disconnected poll is expected while the owner rebuilds the
+		// connection, and the poll runs twice a second: logging it would bury
+		// the reconnect lines that matter.
+		if n, err := s.syncNewContexts(tickCtx); err != nil && !errors.Is(err, ErrDisconnected) {
 			s.log("livecdp: poll sync: %v", err)
 		} else if n > 0 {
 			s.log("livecdp: injected %d new context(s)", n)
