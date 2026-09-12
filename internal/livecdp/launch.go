@@ -62,7 +62,11 @@ type LaunchOptions struct {
 // 136+ only blocks the flag on the default profile dir) and a loopback debug
 // port, leaving the user's everyday Chrome untouched (no single-instance lock).
 type OwnedChrome struct {
-	cmd         *exec.Cmd
+	cmd *exec.Cmd
+	// exited is closed when the single reaper observes Chrome's exit. A
+	// caller cannot test liveness with signal 0 instead: an unreaped child
+	// answers it as if it were still running.
+	exited      chan struct{}
 	Port        int
 	Endpoint    string // http://127.0.0.1:<port>
 	UserDataDir string
@@ -112,7 +116,18 @@ func LaunchOwnedChromeWithOptions(ctx context.Context, opts LaunchOptions) (*Own
 		_, _ = cmd.Process.Wait()
 		return nil, err
 	}
-	return &OwnedChrome{cmd: cmd, Port: opts.Port, Endpoint: endpoint, UserDataDir: opts.UserDataDir}, nil
+	oc := &OwnedChrome{
+		cmd:         cmd,
+		exited:      make(chan struct{}),
+		Port:        opts.Port,
+		Endpoint:    endpoint,
+		UserDataDir: opts.UserDataDir,
+	}
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(oc.exited)
+	}()
+	return oc, nil
 }
 
 // BuildChromeLaunchArgs assembles the owned Chrome argv from LaunchOptions.
@@ -286,14 +301,25 @@ func (o *OwnedChrome) Close() error {
 		return nil
 	}
 	_ = o.cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() { _, _ = o.cmd.Process.Wait(); close(done) }()
 	select {
-	case <-done:
+	case <-o.exited:
 	case <-time.After(5 * time.Second):
 		_ = o.cmd.Process.Kill()
 	}
 	return nil
+}
+
+// Exited reports whether the owned Chrome process has already exited.
+func (o *OwnedChrome) Exited() bool {
+	if o == nil || o.exited == nil {
+		return false
+	}
+	select {
+	case <-o.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 // waitForCDP polls the CDP /json/version endpoint until it responds 200 or

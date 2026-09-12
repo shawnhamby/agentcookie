@@ -2,6 +2,7 @@ package livecdp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,10 +24,21 @@ import (
 // Target.getTargets call per tick.
 const DefaultPollInterval = 600 * time.Millisecond
 
+// DefaultPollTimeout bounds one new-context poll tick. Every CDP call must
+// carry a deadline: chromedp's browser executor parks forever on its outgoing
+// command queue once the websocket reader is gone, and an unbounded poll then
+// leaks the whole tick's cookie set.
+const DefaultPollTimeout = 60 * time.Second
+
 // CookieProvider returns the current decrypted, filtered cookie set to
 // inject. It is called fresh each sync so the loop always injects current
 // values (the source pipeline owns reading/decrypt/blocklist/DBSC).
 type CookieProvider func() ([]chrome.Cookie, error)
+
+// ErrDisconnected is returned by Syncer calls made while the browser-level
+// CDP connection is being rebuilt. Callers must fail fast on it instead of
+// queueing work that a dead connection can never drain.
+var ErrDisconnected = errors.New("livecdp: browser connection unavailable")
 
 // Syncer keeps a live browser's contexts injected with the user's cookies.
 // It solves the isolated-context problem: a connector (browser-use,
@@ -36,42 +48,64 @@ type CookieProvider func() ([]chrome.Cookie, error)
 // (ReinjectAll, used by the source-change watch loop).
 //
 // Injection uses Storage.setCookies addressed by browserContextId via the
-// BROWSER-LEVEL executor (browser) and a stable, shutdown-scoped context
-// (ctx) -- never a page-target-bound chromedp context. This is deliberate: a
-// CDP connector attaching (agent-browser/browser-use) closes the pages a
-// page-context is bound to, which cancels that context; a loop driven off it
-// would then fail every Target.getTargets with "context canceled" forever and
-// never inject the connector's own context. The browser-level connection is
-// owned by the allocator and survives page-target churn, so injection keeps
-// working through connect/disconnect cycles.
+// BROWSER-LEVEL executor (browser) -- never a page-target-bound chromedp
+// context. This is deliberate: a CDP connector attaching
+// (agent-browser/browser-use) closes the pages a page-context is bound to,
+// which cancels that context; a loop driven off it would then fail every
+// Target.getTargets with "context canceled" forever and never inject the
+// connector's own context. The browser-level connection is owned by the
+// allocator and survives page-target churn, so injection keeps working
+// through connect/disconnect cycles.
+//
+// Every entry point takes a caller context that must carry a deadline. The
+// executor itself is swappable so the owner can rebuild a dead browser
+// websocket without recreating the Syncer (and losing the seen-context set).
 type Syncer struct {
-	ctx       context.Context
-	browser   cdp.Executor
 	provider  CookieProvider
 	pollEvery time.Duration
 	log       func(format string, args ...any)
 
 	agentSyncInject *AgentSyncInjectOpts
 
-	mu   sync.Mutex
-	seen map[cdp.BrowserContextID]bool
+	mu      sync.Mutex
+	browser cdp.Executor
+	seen    map[cdp.BrowserContextID]bool
 }
 
-// NewSyncer builds a Syncer that injects via the browser-level executor and a
-// stable, shutdown-scoped context (both survive page-target churn from a CDP
-// connector). log may be nil.
-func NewSyncer(ctx context.Context, browser cdp.Executor, provider CookieProvider, log func(string, ...any)) *Syncer {
+// NewSyncer builds a Syncer that injects via the browser-level executor
+// (which survives page-target churn from a CDP connector). log may be nil.
+func NewSyncer(browser cdp.Executor, provider CookieProvider, log func(string, ...any)) *Syncer {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
 	return &Syncer{
-		ctx:       ctx,
 		browser:   browser,
 		provider:  provider,
 		pollEvery: DefaultPollInterval,
 		log:       log,
 		seen:      map[cdp.BrowserContextID]bool{},
 	}
+}
+
+// SetBrowser swaps the browser-level executor, or marks the Syncer
+// disconnected when browser is nil. The owner calls it around a reconnect so
+// in-flight callers fail fast with ErrDisconnected instead of handing work to
+// a websocket that no longer has a reader.
+func (s *Syncer) SetBrowser(browser cdp.Executor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.browser = browser
+}
+
+// executor returns the current browser executor. The lock is never held
+// across a CDP call, so a reconnect can always make progress.
+func (s *Syncer) executor() (cdp.Executor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.browser == nil {
+		return nil, ErrDisconnected
+	}
+	return s.browser, nil
 }
 
 // EnableAgentSyncInject turns on clearance exclusion and downgrade protection
@@ -86,9 +120,18 @@ func (s *Syncer) EnableAgentSyncInject() {
 // Run injects into existing contexts immediately, then polls for new
 // contexts until ctx is cancelled. Returns ctx.Err() on shutdown.
 func (s *Syncer) Run(ctx context.Context) error {
-	if _, err := s.syncNewContexts(); err != nil {
-		s.log("livecdp: initial sync: %v", err)
+	// Each tick gets its own bounded child context: a tick that inherited the
+	// daemon lifetime could park on a dead CDP connection for days.
+	tick := func() {
+		tickCtx, cancel := context.WithTimeout(ctx, DefaultPollTimeout)
+		defer cancel()
+		if n, err := s.syncNewContexts(tickCtx); err != nil {
+			s.log("livecdp: poll sync: %v", err)
+		} else if n > 0 {
+			s.log("livecdp: injected %d new context(s)", n)
+		}
 	}
+	tick()
 	t := time.NewTicker(s.pollEvery)
 	defer t.Stop()
 	for {
@@ -96,11 +139,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			if n, err := s.syncNewContexts(); err != nil {
-				s.log("livecdp: poll sync: %v", err)
-			} else if n > 0 {
-				s.log("livecdp: injected %d new context(s)", n)
-			}
+			tick()
 		}
 	}
 }
@@ -108,17 +147,26 @@ func (s *Syncer) Run(ctx context.Context) error {
 // ReinjectAll re-injects current cookies into ALL live contexts, including
 // ones already seen. The source-change watch loop (U4) calls this so a
 // cookie the user just refreshed propagates into running agent contexts.
-func (s *Syncer) ReinjectAll() (int, error) {
+// ctx bounds every CDP call it makes; ReinjectAll returns as soon as ctx
+// expires rather than holding its cookie set on a stalled connection.
+func (s *Syncer) ReinjectAll(ctx context.Context) (int, error) {
+	if _, err := s.executor(); err != nil {
+		return 0, err
+	}
 	cookies, err := s.provider()
 	if err != nil {
 		return 0, fmt.Errorf("livecdp: provider: %w", err)
 	}
-	return s.injectAllFiltered(cookies)
+	return s.injectAllFiltered(ctx, cookies)
 }
 
 // syncNewContexts injects only into browser contexts not yet seen.
-func (s *Syncer) syncNewContexts() (int, error) {
-	ids, explicit, err := injectableContexts(s.ctx, s.browser)
+func (s *Syncer) syncNewContexts(ctx context.Context) (int, error) {
+	browser, err := s.executor()
+	if err != nil {
+		return 0, err
+	}
+	ids, explicit, err := injectableContexts(ctx, browser)
 	if err != nil {
 		return 0, err
 	}
@@ -142,7 +190,7 @@ func (s *Syncer) syncNewContexts() (int, error) {
 			loaded = true
 		}
 		toInject, clearanceSkipped, downgradeSkipped, err := filterCookiesForContext(
-			s.ctx, s.browser, id, explicit[id], cookies, s.agentSyncInject, cache,
+			ctx, browser, id, explicit[id], cookies, s.agentSyncInject, cache,
 		)
 		if err != nil {
 			s.log("livecdp: filter context %q: %v", id, err)
@@ -150,7 +198,7 @@ func (s *Syncer) syncNewContexts() (int, error) {
 		}
 		clearanceTotal += clearanceSkipped
 		downgradeTotal += downgradeSkipped
-		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], toInject); err != nil {
+		if err := injectIntoContext(ctx, browser, id, explicit[id], toInject); err != nil {
 			s.log("livecdp: inject context %q: %v", id, err)
 			continue
 		}
@@ -199,8 +247,12 @@ func injectAll(ctx context.Context, browser cdp.Executor, cookies []chrome.Cooki
 	return n, firstErr
 }
 
-func (s *Syncer) injectAllFiltered(cookies []chrome.Cookie) (int, error) {
-	ids, explicit, err := injectableContexts(s.ctx, s.browser)
+func (s *Syncer) injectAllFiltered(ctx context.Context, cookies []chrome.Cookie) (int, error) {
+	browser, err := s.executor()
+	if err != nil {
+		return 0, err
+	}
+	ids, explicit, err := injectableContexts(ctx, browser)
 	if err != nil {
 		return 0, err
 	}
@@ -210,7 +262,7 @@ func (s *Syncer) injectAllFiltered(cookies []chrome.Cookie) (int, error) {
 	var firstErr error
 	for _, id := range ids {
 		toInject, clearanceSkipped, downgradeSkipped, err := filterCookiesForContext(
-			s.ctx, s.browser, id, explicit[id], cookies, s.agentSyncInject, cache,
+			ctx, browser, id, explicit[id], cookies, s.agentSyncInject, cache,
 		)
 		if err != nil {
 			if firstErr == nil {
@@ -221,7 +273,7 @@ func (s *Syncer) injectAllFiltered(cookies []chrome.Cookie) (int, error) {
 		}
 		clearanceTotal += clearanceSkipped
 		downgradeTotal += downgradeSkipped
-		if err := injectIntoContext(s.ctx, s.browser, id, explicit[id], toInject); err != nil {
+		if err := injectIntoContext(ctx, browser, id, explicit[id], toInject); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

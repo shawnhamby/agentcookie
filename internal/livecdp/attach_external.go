@@ -73,7 +73,7 @@ func AttachSyncer(ctx context.Context, endpoint string, provider CookieProvider,
 		return nil, nil, fmt.Errorf("livecdp: establish browser connection: %w", err)
 	}
 	browser := chromedp.FromContext(browserCtx).Browser
-	syncer := NewSyncer(ctx, browser, provider, log)
+	syncer := NewSyncer(browser, provider, log)
 	return syncer, cleanup, nil
 }
 

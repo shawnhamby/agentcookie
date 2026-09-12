@@ -93,6 +93,13 @@ func (c Config) baselineTick() time.Duration {
 type Watcher struct {
 	cfg Config
 
+	// pushes is the single-flight gate: capacity one, so at most one push runs
+	// while at most one more waits. A push that cannot be admitted is dropped,
+	// not parked -- the pending push re-reads the source anyway. Spawning a
+	// goroutine per event instead let a stalled sink accumulate thousands of
+	// them, each holding its own cookie set.
+	pushes chan string
+
 	mu         sync.Mutex
 	lastPush   time.Time
 	lastErr    error
@@ -111,7 +118,28 @@ func New(cfg Config) (*Watcher, error) {
 	if _, err := os.Stat(filepath.Dir(cfg.CookiesPath)); err != nil {
 		return nil, fmt.Errorf("watch parent dir: %w", err)
 	}
-	return &Watcher{cfg: cfg}, nil
+	return &Watcher{cfg: cfg, pushes: make(chan string, 1)}, nil
+}
+
+// enqueue admits one push, or records it as the single pending rerun when a
+// push is already in flight. It never blocks the caller.
+func (w *Watcher) enqueue(reason string) {
+	select {
+	case w.pushes <- reason:
+	default:
+	}
+}
+
+// runPushes serializes admitted pushes until ctx is done.
+func (w *Watcher) runPushes(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case reason := <-w.pushes:
+			w.runOne(ctx, reason)
+		}
+	}
 }
 
 // Run blocks. Returns when ctx is canceled.
@@ -144,8 +172,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 		}
 	}
 
-	// Kick off one push at startup so the sink is current from t=0.
-	go w.runOne(ctx, "startup")
+	// One serialized push runner for the lifetime of the loop; every trigger,
+	// including startup, goes through its gate.
+	go w.runPushes(ctx)
+	w.enqueue("startup")
 
 	debounceTimer := time.NewTimer(time.Hour)
 	debounceTimer.Stop()
@@ -193,7 +223,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if !w.respectRateCap() {
 				continue
 			}
-			go w.runOne(ctx, "fs-event")
+			w.enqueue("fs-event")
 
 		case <-baselineTicker.C:
 			if pendingEvent {
@@ -202,7 +232,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if !w.respectRateCap() {
 				continue
 			}
-			go w.runOne(ctx, "baseline-tick")
+			w.enqueue("baseline-tick")
 		}
 	}
 }
