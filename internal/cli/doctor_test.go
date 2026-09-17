@@ -61,10 +61,11 @@ designated => identifier "com.mvanhorn.agentcookie" and anchor apple generic and
 				t.Errorf("detail missing %q: %q", tc.wantSubs, c.Detail)
 			}
 			if tc.wantSev == SeverityWarn {
-				for _, want := range []string{"AGENTCOOKIE_SIGN_IDENTITY", "DEFAULT_SIGN_IDENTITY"} {
-					if !strings.Contains(c.Remediation, want) {
-						t.Errorf("remediation missing canonical signing mapping %q: %q", want, c.Remediation)
-					}
+				if !strings.Contains(c.Remediation, "DEFAULT_SIGN_IDENTITY") {
+					t.Errorf("remediation missing DEFAULT_SIGN_IDENTITY: %q", c.Remediation)
+				}
+				if strings.Contains(c.Remediation, "AGENTCOOKIE_SIGN_IDENTITY") {
+					t.Errorf("remediation still names AGENTCOOKIE_SIGN_IDENTITY: %q", c.Remediation)
 				}
 			}
 		})

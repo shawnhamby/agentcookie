@@ -145,10 +145,7 @@ func TestWriteAgentSyncCapabilities(t *testing.T) {
 			t.Errorf("supported_flags missing %q: %v", want, got.SupportedFlags)
 		}
 	}
-	if got.SigningSummary.CanonicalIdentityEnv != "AGENTCOOKIE_SIGN_IDENTITY" {
+	if got.SigningSummary.CanonicalIdentityEnv != "DEFAULT_SIGN_IDENTITY" {
 		t.Errorf("canonical signing env = %q", got.SigningSummary.CanonicalIdentityEnv)
-	}
-	if got.SigningSummary.ExternalWrapperMapping.From != "DEFAULT_SIGN_IDENTITY" || got.SigningSummary.ExternalWrapperMapping.To != "AGENTCOOKIE_SIGN_IDENTITY" {
-		t.Errorf("wrapper mapping = %+v", got.SigningSummary.ExternalWrapperMapping)
 	}
 }

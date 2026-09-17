@@ -20,7 +20,7 @@
 # cert. CI release builds run `make` (build + sign) on a signing-enabled
 # macOS runner.
 #
-# Override the signing identity by exporting AGENTCOOKIE_SIGN_IDENTITY. See
+# Override the signing identity by exporting DEFAULT_SIGN_IDENTITY. See
 # docs/runbook-v0.12-codesign.md for how to install / renew the cert.
 
 SHELL := /bin/bash
@@ -64,17 +64,17 @@ install:
 
 # Local-developer install: same version-stamped install, signed with a locally
 # available identity instead of the release Developer ID (not present on most
-# machines). Requires AGENTCOOKIE_SIGN_IDENTITY (canonical variable, e.g. an
+# machines). Requires DEFAULT_SIGN_IDENTITY (canonical variable, e.g. an
 # "Apple Development: ..." cert). Backs up the current binary first so a bad
 # build never strands consumers that preflight this path.
 install-dev:
-	@if [[ -z "$$AGENTCOOKIE_SIGN_IDENTITY" ]]; then \
-	  echo "make install-dev: set AGENTCOOKIE_SIGN_IDENTITY to a locally available signing identity" >&2; \
+	@if [[ -z "$$DEFAULT_SIGN_IDENTITY" ]]; then \
+	  echo "make install-dev: set DEFAULT_SIGN_IDENTITY to a locally available signing identity" >&2; \
 	  exit 1; \
 	fi
 	@if [[ -f "$(GOBIN)/agentcookie" ]]; then cp "$(GOBIN)/agentcookie" "$(GOBIN)/agentcookie.bak"; fi
 	go install -ldflags "$(LDFLAGS)" $(PKG)
-	codesign --force --sign "$$AGENTCOOKIE_SIGN_IDENTITY" "$(GOBIN)/agentcookie"
+	codesign --force --sign "$$DEFAULT_SIGN_IDENTITY" "$(GOBIN)/agentcookie"
 	codesign -v "$(GOBIN)/agentcookie"
 
 sign:

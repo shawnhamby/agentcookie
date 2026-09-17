@@ -576,7 +576,7 @@ func checkBinarySignatureWith(probe func() (string, error)) Check {
 			Name:        "Binary signature",
 			Severity:    SeverityWarn,
 			Detail:      "codesign unavailable (" + err.Error() + ")",
-			Remediation: "install Xcode command-line tools if you want signature verification; signing overrides use AGENTCOOKIE_SIGN_IDENTITY (external wrappers map DEFAULT_SIGN_IDENTITY to it)",
+			Remediation: "install Xcode command-line tools if you want signature verification; signing overrides use DEFAULT_SIGN_IDENTITY",
 		}
 	}
 	if strings.Contains(out, "NM8VT393AR") {
@@ -590,7 +590,7 @@ func checkBinarySignatureWith(probe func() (string, error)) Check {
 		Name:        "Binary signature",
 		Severity:    SeverityWarn,
 		Detail:      "ad-hoc signed (local build); not a release binary",
-		Remediation: "fine for development; signing overrides use AGENTCOOKIE_SIGN_IDENTITY (external wrappers map DEFAULT_SIGN_IDENTITY to it), or install the notarized release binary",
+		Remediation: "fine for development; signing overrides use DEFAULT_SIGN_IDENTITY, or install the notarized release binary",
 	}
 }
 

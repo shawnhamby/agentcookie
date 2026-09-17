@@ -30,8 +30,7 @@ const defaultAgentSyncPort = 9400
 
 const (
 	agentSyncCapabilitiesSchemaVersion = 1
-	canonicalSignIdentityEnv           = "AGENTCOOKIE_SIGN_IDENTITY"
-	externalWrapperSignIdentityEnv     = "DEFAULT_SIGN_IDENTITY"
+	canonicalSignIdentityEnv           = "DEFAULT_SIGN_IDENTITY"
 )
 
 var (
@@ -579,13 +578,7 @@ func runAgentSyncWatchers(ctx context.Context, paths []string, push func(context
 }
 
 type agentSyncSigningSummary struct {
-	CanonicalIdentityEnv   string                         `json:"canonical_identity_env"`
-	ExternalWrapperMapping agentSyncSigningWrapperMapping `json:"external_wrapper_mapping"`
-}
-
-type agentSyncSigningWrapperMapping struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	CanonicalIdentityEnv string `json:"canonical_identity_env"`
 }
 
 type agentSyncCapabilities struct {
@@ -640,10 +633,6 @@ func writeAgentSyncCapabilities(w io.Writer, cmd *cobra.Command, cfg *config.Sou
 		BuildVersion:            Version,
 		SigningSummary: agentSyncSigningSummary{
 			CanonicalIdentityEnv: canonicalSignIdentityEnv,
-			ExternalWrapperMapping: agentSyncSigningWrapperMapping{
-				From: externalWrapperSignIdentityEnv,
-				To:   canonicalSignIdentityEnv,
-			},
 		},
 	}
 	enc := json.NewEncoder(w)

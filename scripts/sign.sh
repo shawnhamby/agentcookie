@@ -2,7 +2,7 @@
 #
 # sign.sh - Sign a macOS binary with the agentcookie Developer ID identity.
 #
-# Reads AGENTCOOKIE_SIGN_IDENTITY from the environment, falling back to
+# Reads DEFAULT_SIGN_IDENTITY from the environment, falling back to
 # the maintainer's Developer ID Application identity. Hardened Runtime
 # (--options runtime) and secure timestamping (--timestamp) are required
 # so the binary qualifies for notarization (scripts/notarize.sh). After
@@ -17,7 +17,7 @@
 #   scripts/sign.sh <binary> [<binary> ...]
 #
 # Environment:
-#   AGENTCOOKIE_SIGN_IDENTITY  codesign identity string (CN of the cert,
+#   DEFAULT_SIGN_IDENTITY  codesign identity string (CN of the cert,
 #                              or the SHA-1 fingerprint).
 #                              Default: "Developer ID Application: Matthew
 #                              Charles Van Horn (NM8VT393AR)"
@@ -35,7 +35,7 @@ set -euo pipefail
 readonly DEFAULT_IDENTITY="Developer ID Application: Matthew Charles Van Horn (NM8VT393AR)"
 readonly RUNBOOK="docs/runbook-v0.12-codesign.md"
 
-IDENTITY="${AGENTCOOKIE_SIGN_IDENTITY:-$DEFAULT_IDENTITY}"
+IDENTITY="${DEFAULT_SIGN_IDENTITY:-$DEFAULT_IDENTITY}"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: scripts/sign.sh <binary> [<binary> ...]" >&2
@@ -57,7 +57,7 @@ To install the Developer ID Application cert on a fresh build machine, see
 $RUNBOOK.
 
 To override the identity (e.g., a contributor's own cert), set
-AGENTCOOKIE_SIGN_IDENTITY before invoking make / scripts/sign.sh.
+DEFAULT_SIGN_IDENTITY before invoking make / scripts/sign.sh.
 EOF
   exit 2
 fi

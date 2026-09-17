@@ -12,9 +12,9 @@ The signing identity used by this repo by default is:
     Team ID     : NM8VT393AR
 
 Local builds, `go install`, and CI release builds all sign with this
-identity unless `AGENTCOOKIE_SIGN_IDENTITY` is overridden.
+identity unless `DEFAULT_SIGN_IDENTITY` is overridden.
 
-`AGENTCOOKIE_SIGN_IDENTITY` is the only signing-identity variable. Callers
+`DEFAULT_SIGN_IDENTITY` is the only signing-identity variable. Callers
 must set it before `make install-dev` or `scripts/sign.sh`.
 
 ## What signing buys us
@@ -141,7 +141,7 @@ A contributor who wants to test the build pipeline with their own
 Developer ID cert can do so without editing any code:
 
 ```
-AGENTCOOKIE_SIGN_IDENTITY="Developer ID Application: Jane Doe (XXXXXXXXXX)" \
+DEFAULT_SIGN_IDENTITY="Developer ID Application: Jane Doe (XXXXXXXXXX)" \
   make sign
 ```
 
