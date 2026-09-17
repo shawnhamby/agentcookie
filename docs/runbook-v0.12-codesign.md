@@ -14,10 +14,8 @@ The signing identity used by this repo by default is:
 Local builds, `go install`, and CI release builds all sign with this
 identity unless `AGENTCOOKIE_SIGN_IDENTITY` is overridden.
 
-`AGENTCOOKIE_SIGN_IDENTITY` is the canonical repository-facing variable. An
-external workspace wrapper may read `DEFAULT_SIGN_IDENTITY`, but it must map
-that value into `AGENTCOOKIE_SIGN_IDENTITY` before invoking this repository's
-Makefile or `scripts/sign.sh`; the wrapper itself is maintained separately.
+`AGENTCOOKIE_SIGN_IDENTITY` is the only signing-identity variable. Callers
+must set it before `make install-dev` or `scripts/sign.sh`.
 
 ## What signing buys us
 
