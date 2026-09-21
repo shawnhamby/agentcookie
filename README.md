@@ -251,6 +251,36 @@ Replace:
 - `your-mac.tailnet` with your Mac's Tailscale hostname (`tailscale status` on either machine)
 - The pairing code and URL with the values printed by the Mac source wizard
 
+### Linux CDP source (existing browser; no SQLite access)
+
+When the authenticated browser already runs on Linux, set `cdp_source` in its
+**source** configuration. AgentCookie reads the live jar through CDP, applies
+the existing `blocklist.yaml`, and sends the normal paired encrypted envelope.
+It never opens, copies, or decrypts Chromium's SQLite database.
+
+```yaml
+# ~/.config/agentcookie/source.yaml
+sink:
+  url: http://your-sink.tailnet:9999/sync
+peer:
+  hostname: your-sink
+cdp_source:
+  enabled: true
+  endpoint: http://127.0.0.1:9230
+```
+
+The endpoint must be a bare `http` origin using a **literal loopback IP**
+(`127.0.0.1` or `::1`); hostnames such as `localhost` are rejected so a hosts
+or DNS override cannot redirect browser-control access off-host. Tailnet, LAN,
+public, credential-bearing, and path/query endpoints are rejected. CDP-source
+configuration is exclusive: do not set `chrome.db_path` or `browser`.
+`export`, `agent-sync`, and `cmux-sync` also read from the configured CDP
+endpoint in this mode, without falling back to another profile; their watch
+modes poll rather than watching a SQLite file. `source --once` reads once;
+`source --watch` polls every 10 seconds because CDP does not provide a
+cookie-change event. CDP-source mode carries cookies only: it deliberately does
+not scrape Local Storage or IndexedDB from an on-disk profile as a fallback.
+
 ### Attach to the existing Chrome (or start one as fallback)
 
 On Grok Bot and most agent runtimes, Chrome is already running with a debug port. Probe before starting a new one:
@@ -394,6 +424,26 @@ agentcookie wizard install --as source --add-sink \
 
 **Trust note:** every sink receives the same full cookie and secret set, so a compromise of the least-trusted sink exposes everything. Only list sinks you trust with the whole payload. To stop feeding a sink, remove its entry from `sinks:` and delete its `keys/<peer>.json`. The device-bound (DBSC) caveat below is per-sink and unchanged: each sink still needs its own Chrome signed into the same Google account.
 
+## Client-only sinks (inbound blocked)
+
+Some sandboxes can dial out over Tailscale but cannot accept inbound HTTP, so the usual POST to the sink's `/sync` never lands and the cookie store stays empty.
+
+On the Mac, `source --watch` already serves pairing on port 9998. It now keeps a listener up during watch and adds `GET /pull` (HMAC-authenticated with the paired key) that returns the latest sealed envelope.
+
+On the blocked box, skip the sync listener and poll:
+
+```bash
+# Pairing is outbound (sink -> source /pair) and already works.
+agentcookie pair --as sink --peer <mac-hostname> \
+  --pair-url http://<mac-hostname>:9998/pair --code <code>
+
+agentcookie sink --pull-from <mac-hostname> --pull-interval 30s
+```
+
+`--pull-from` accepts a hostname, `host:port`, or a full URL. Bare hostnames default to `http://<host>:9998/pull`. The poll client honors `HTTP_PROXY` / `HTTPS_PROXY`, which is required when the sandbox only reaches the tailnet through a local proxy. Crypto, envelope format, and Chrome read/write paths are unchanged.
+
+The client-only box does not need its own `sinks:` entry on the Mac. Pairing writes the peer key; `/pull` seals with that key. Keep the Mac's existing push sinks as they are.
+
 ## What about Chrome's device-bound cookies (DBSC)?
 
 Chrome's Device Bound Session Credentials (DBSC) tie a session to one machine's secure hardware so a stolen cookie cannot be replayed elsewhere. For a site that has adopted DBSC, a copied cookie works on the sink only until its short-lived window (minutes) lapses.
@@ -409,6 +459,7 @@ The secrets bus (bearer tokens, API keys, OAuth refresh tokens) is untouched by 
 ### Working today
 
 - Mac to Linux continuous sync via Tailscale `/sync`
+- Client-only sinks via `GET /pull` + `sink --pull-from` when inbound HTTP is blocked
 - Mac to Mac continuous sync (second Mac, Mac mini)
 - Live CDP injection on Linux (cookies go into Chrome's in-memory store)
 - Three cookie delivery surfaces on macOS sink (Chrome SQLite, plaintext sidecar, per-CLI adapters)

@@ -66,7 +66,7 @@ var statusCmd = &cobra.Command{
 		} else {
 			st.Errors = append(st.Errors, "blocklist.yaml: "+err.Error())
 		}
-		if ss, err := state.LoadSource(state.SourcePath(home)); err == nil && ss != nil {
+		if ss, err := state.LoadSource(sourceStatePathForConfig(st.SourceConfig, common.ConfigDir, home)); err == nil && ss != nil {
 			st.SourceState = ss
 		}
 		if sk, err := state.LoadSink(state.SinkPath(home)); err == nil && sk != nil {
@@ -105,8 +105,12 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("agentcookie %s\n", st.Version)
 		fmt.Printf("config dir: %s\n", st.ConfigDir)
 		if st.SourceConfig != nil {
-			fmt.Printf("  source -> %s\n", st.SourceConfig.Sink.URL)
-			fmt.Printf("    chrome db: %s\n", st.SourceConfig.Chrome.DBPath)
+			fmt.Printf("  source -> %s\n", sinkURLList(st.SourceConfig.ResolvedSinks()))
+			if st.SourceConfig.CDPSource.Enabled {
+				fmt.Printf("    cdp source: %s\n", st.SourceConfig.CDPSource.Endpoint)
+			} else {
+				fmt.Printf("    chrome db: %s\n", st.SourceConfig.Chrome.DBPath)
+			}
 		} else {
 			fmt.Println("  source: not configured")
 		}

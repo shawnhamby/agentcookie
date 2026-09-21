@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,17 +31,22 @@ import (
 )
 
 var (
-	sourceOnce     bool
-	sourceWatch    bool
-	sourceVerbose  bool
-	sourceDryRun   bool
-	sourceSkipDBSC bool
+	sourceOnce       bool
+	sourceWatch      bool
+	sourceVerbose    bool
+	sourceDryRun     bool
+	sourceSkipDBSC   bool
+	sourcePullListen string
 )
 
 // resolveSinkURL is the sink URL resolver used by pushOnce. Production
 // wires it to tsclient.ResolveSinkURL; tests can override it to inject
 // specific resolution behaviors (e.g., ErrAmbiguousPeer).
 var resolveSinkURL = tsclient.ResolveSinkURL
+
+// loadSecretsPayload is replaceable by tests. CDP-source profiles are
+// cookie-only, so they must not inherit process-home secrets bus state.
+var loadSecretsPayload = secretsbus.LoadPayloadWithDiscovery
 
 // SetResolveSinkURLForTesting replaces resolveSinkURL with the given
 // function and returns a restore func. Test-only seam.
@@ -70,7 +77,14 @@ var sourceCmd = &cobra.Command{
                               500ms and runs a push. Rate-capped at one push
                               every 2 seconds even under continuous Chrome
                               activity. This is the v0.2 default mode and the
-                              one a LaunchAgent should run.`,
+                              one a LaunchAgent should run.
+
+While --watch is running, the source also serves GET /pull on the pairing
+port (Tailscale 100.x:9998 by default, override with --pull-listen). Client-
+only sinks that cannot accept inbound HTTP poll that endpoint instead of
+receiving POST /sync:
+
+  agentcookie sink --pull-from <this-host> --pull-interval 30s`,
 	RunE: runSource,
 }
 
@@ -80,6 +94,7 @@ func init() {
 	sourceCmd.Flags().BoolVar(&sourceVerbose, "verbose", false, "log per-pattern decisions to stderr")
 	sourceCmd.Flags().BoolVar(&sourceDryRun, "dry-run", false, "read + filter but do not contact the sink")
 	sourceCmd.Flags().BoolVar(&sourceSkipDBSC, "skip-dbsc-suspect", false, "drop cookies that look device-bound (DBSC) instead of shipping them with a warning; also honored via AGENTCOOKIE_SKIP_DBSC_SUSPECT=1")
+	sourceCmd.Flags().StringVar(&sourcePullListen, "pull-listen", "", "host:port for GET /pull while --watch is running (default: this machine's Tailscale 100.x:9998)")
 }
 
 func runSource(cmd *cobra.Command, args []string) error {
@@ -101,19 +116,23 @@ func runSource(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
-	if err != nil {
-		return err
-	}
-	password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
-	if err != nil {
-		// SafeStoragePasswordFor already prefixes its error with
-		// "read <service> from Keychain ..."; don't double the prefix.
-		return err
-	}
-	key, err := chrome.DeriveAESKey(password)
-	if err != nil {
-		return err
+	var key []byte
+	var sourceBrowser chrome.Browser
+	if !cfg.CDPSource.Enabled {
+		sourceBrowser, err = chrome.LookupBrowser(cfg.Browser.Name)
+		if err != nil {
+			return err
+		}
+		password, err := chrome.SafeStoragePasswordFor(sourceBrowser)
+		if err != nil {
+			// SafeStoragePasswordFor already prefixes its error with
+			// "read <service> from Keychain ..."; don't double the prefix.
+			return err
+		}
+		key, err = chrome.DeriveAESKey(password)
+		if err != nil {
+			return err
+		}
 	}
 	// Per-sink transport secrets are resolved inside the fan-out loop
 	// (pushOnce), not here: resolving all secrets up front would let one
@@ -123,7 +142,7 @@ func runSource(cmd *cobra.Command, args []string) error {
 
 	// State writer for `agentcookie status` to read.
 	home, _ := os.UserHomeDir()
-	stateWriter := state.NewWriter(state.SourcePath(home))
+	stateWriter := state.NewWriter(sourceStatePath(cfg.CDPSource.Enabled, common.ConfigDir, home))
 	legacySinkURL := ""
 	if len(sinks) > 0 {
 		legacySinkURL = sinks[0].URL
@@ -156,6 +175,14 @@ func runSource(cmd *cobra.Command, args []string) error {
 		defer cancel()
 		_, err := push(ctx)
 		return err
+	}
+
+	if err := startWatchPullListener(cmd.Context(), cfg); err != nil {
+		return err
+	}
+
+	if cfg.CDPSource.Enabled {
+		return runCDPSourceWatch(cmd.Context(), push, cfg.CDPSource.Endpoint, sourceVerbose)
 	}
 
 	// --watch mode: long-running fsnotify watcher across all three sync
@@ -214,6 +241,51 @@ func runSource(cmd *cobra.Command, args []string) error {
 	return w.Run(cmd.Context())
 }
 
+func sourceStatePath(cdpSource bool, configDir, home string) string {
+	if cdpSource {
+		return filepath.Join(configDir, "state", "source-state.json")
+	}
+	return state.SourcePath(home)
+}
+
+func sourceStatePathForConfig(cfg *config.SourceConfig, configDir, home string) string {
+	return sourceStatePath(cfg != nil && cfg.CDPSource.Enabled, configDir, home)
+}
+
+const cdpSourcePollInterval = 10 * time.Second
+
+// runCDPSourceWatch polls the browser's CDP jar rather than watching encrypted
+// SQLite files. CDP has no cookie-change event, so polling is deliberately
+// bounded; every cycle follows the same allowlist and encrypted push path.
+func runCDPSourceWatch(ctx context.Context, push func(context.Context) (int, error), endpoint string, verbose bool) error {
+	if _, err := push(ctx); err != nil {
+		return err
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "agentcookie source --watch: polling loopback CDP at %s every %s\n", endpoint, cdpSourcePollInterval)
+	}
+	ticker := time.NewTicker(cdpSourcePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if _, err := push(ctx); err != nil && verbose {
+				fmt.Fprintf(os.Stderr, "agentcookie source --watch: CDP poll failed: %v\n", err)
+			}
+		}
+	}
+}
+
+// sourcePushMu serializes complete source push cycles. Cookie, secrets, and
+// discovery watchers each invoke push independently, and the cookie watcher
+// launches runOne in a goroutine (the startup push bypasses the rate cap),
+// so cycles can overlap. A slower empty or fail-closed cycle must not Clear
+// a newer envelope already published to GET /pull. Same reason cmux-sync
+// serializes whole cycles.
+var sourcePushMu sync.Mutex
+
 func pushWithFreshBlocklist(
 	ctx context.Context,
 	cfg *config.SourceConfig,
@@ -224,13 +296,24 @@ func pushWithFreshBlocklist(
 	srcState *state.SourceState,
 	stateWriter *state.Writer,
 ) (int, error) {
+	sourcePushMu.Lock()
+	defer sourcePushMu.Unlock()
+
+	var pullGen uint64
+	if !dryRun {
+		pullGen = pullPayloadCache.Begin()
+	}
+
 	blocklist, err := loadFreshBlocklist()
 	var dbsc dbscSummary
 	if err != nil {
+		// Fail closed at the sync boundary: do not keep serving a previously
+		// filtered envelope from GET /pull after policy cannot be loaded.
+		pullPayloadCache.ClearIfCurrent(pullGen)
 		recordSourcePushResult(srcState, stateWriter, nil, dbsc, err)
 		return 0, err
 	}
-	results, dbsc, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC)
+	results, dbsc, err := pushOnce(ctx, cfg, blocklist, key, dryRun, verbose, skipDBSC, pullGen)
 	recordSourcePushResult(srcState, stateWriter, results, dbsc, err)
 	if err != nil {
 		return 0, err
@@ -303,6 +386,15 @@ func recordSourcePushResult(
 			srcState.LastPush = now
 		}
 	}
+	// A successful cycle with no eligible cookies or secrets has no per-sink
+	// transport result, but it is still a healthy source read. pushOnce uses a
+	// non-nil empty slice for that case; nil is a dry-run and intentionally
+	// leaves the durable health state unchanged.
+	if err == nil && results != nil && len(results) == 0 {
+		srcState.TotalPushes++
+		srcState.LastPushCount = 0
+		srcState.LastPush = now
+	}
 	srcState.LastDBSCWarned = dbsc.warned
 	srcState.LastDBSCSkipped = dbsc.skipped
 	srcState.LastDBSCSample = dbsc.sample
@@ -342,15 +434,29 @@ func pushOnce(
 	dryRun bool,
 	verbose bool,
 	skipDBSC bool,
+	pullGen uint64,
 ) ([]sinkResult, dbscSummary, error) {
 	var dbsc dbscSummary
 
 	// Shared read pipeline (decrypt -> cookie policy -> DBSC). See
 	// readFilteredCookies in cookie_pipeline.go; `source` and `cmux-sync`
 	// both use it so they filter identically.
-	all, st, err := readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
-	if err != nil {
-		return nil, dbsc, err
+	var all []chrome.Cookie
+	var st readStats
+	var err error
+	if cfg.CDPSource.Enabled {
+		all, err = readCDPSource(ctx, cfg.CDPSource.Endpoint)
+		if err != nil {
+			pullPayloadCache.ClearIfCurrent(pullGen)
+			return nil, dbsc, fmt.Errorf("read cookies from cdp source: %w", err)
+		}
+		all, st = filterCookies(all, blocklist, skipDBSC, time.Now().UTC())
+	} else {
+		all, st, err = readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, time.Now().UTC())
+		if err != nil {
+			pullPayloadCache.ClearIfCurrent(pullGen)
+			return nil, dbsc, err
+		}
 	}
 	totalRead := st.totalRead
 	totalDropped := st.totalDropped
@@ -384,7 +490,11 @@ func pushOnce(
 	// [secrets.file] in place, applies sync policy, and merges. v1 bus
 	// wins per-key over v2 read-in-place per spec section 10.3.
 	home, _ := os.UserHomeDir()
-	secretsPayload, secretsErrs := secretsbus.LoadPayloadWithDiscovery(home)
+	var secretsPayload *secretsbus.Payload
+	var secretsErrs []error
+	if !cfg.CDPSource.Enabled {
+		secretsPayload, secretsErrs = loadSecretsPayload(home)
+	}
 	for _, e := range secretsErrs {
 		fmt.Fprintf(os.Stderr, "agentcookie source: secrets-bus: %v\n", e)
 	}
@@ -410,9 +520,21 @@ func pushOnce(
 		"posted":               false,
 	}
 
-	if dryRun || (len(all) == 0 && secretsCLICount == 0) {
+	if dryRun {
 		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
 		return nil, dbsc, nil
+	}
+	if len(all) == 0 && secretsCLICount == 0 {
+		_ = emit(result, fmt.Sprintf("agentcookie source: %d cookies after cookie policy (%s), %d secrets clis (dry-run=%v)%s\n", len(all), blocklist.CookiePolicySummary(), secretsCLICount, dryRun, dbscNote(dbsc)))
+		// Nothing to deliver under the current policy. Drop any previously
+		// cached envelope so GET /pull cannot hand a newly polling sink
+		// cookies this cycle excluded. ClearIfCurrent no-ops if a newer
+		// cycle already published (or began) its own payload.
+		pullPayloadCache.ClearIfCurrent(pullGen)
+		// A non-nil empty result records that this was a successful source
+		// cycle with no delivery attempt. nil remains reserved for dry-runs,
+		// which must not make source health look current.
+		return []sinkResult{}, dbsc, nil
 	}
 
 	// v0.7: pack Local Storage and IndexedDB alongside cookies from the
@@ -424,29 +546,35 @@ func pushOnce(
 	// underneath us; fail loud rather than silently packing Chrome's profile
 	// (which would mismatch the cookies/localStorage/IndexedDB the watcher and
 	// the rest of this push are reading from the configured browser).
-	sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
-	if err != nil {
-		return nil, dbsc, err
-	}
 	var lsTarball []byte
 	var idbTarball []byte
 	var idbSkipped []string
-	if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
-		lsTarball = lt
-	} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-		fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
-	}
-	// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
-	// Slack message history) and inlining that in the JSON envelope blows
-	// past the source-side POST timeout. Most PP CLIs auth via localStorage
-	// or cookies; IndexedDB is rarely an auth-state surface in practice.
-	// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
-	if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
-		if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
-			idbTarball = it
-			idbSkipped = sk
+	if !cfg.CDPSource.Enabled {
+		// CDP source mode intentionally carries cookies only: localStorage and
+		// IndexedDB remain in the existing browser and must not be scraped from
+		// an on-disk profile as a fallback.
+		sourceBrowser, err := chrome.LookupBrowser(cfg.Browser.Name)
+		if err != nil {
+			pullPayloadCache.ClearIfCurrent(pullGen)
+			return nil, dbsc, err
+		}
+		if lt, _, err := chromedirsync.Pack(sourceBrowser.LocalStorageLevelDB(cfg.Browser.Profile), 0); err == nil {
+			lsTarball = lt
 		} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
-			fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+			fmt.Fprintf(os.Stderr, "agentcookie source: localStorage pack failed (%v); continuing without it\n", err)
+		}
+		// IndexedDB is opt-in for v0.7: typical user dirs are 400MB+ (Gmail caches,
+		// Slack message history) and inlining that in the JSON envelope blows
+		// past the source-side POST timeout. Most PP CLIs auth via localStorage
+		// or cookies; IndexedDB is rarely an auth-state surface in practice.
+		// Set AGENTCOOKIE_SYNC_INDEXEDDB=1 to opt in.
+		if os.Getenv("AGENTCOOKIE_SYNC_INDEXEDDB") == "1" {
+			if it, sk, err := chromedirsync.Pack(sourceBrowser.IndexedDBDir(cfg.Browser.Profile), 5*1024*1024); err == nil {
+				idbTarball = it
+				idbSkipped = sk
+			} else if !errors.Is(err, chromedirsync.ErrSourceMissing) {
+				fmt.Fprintf(os.Stderr, "agentcookie source: indexedDB pack failed (%v); continuing without it\n", err)
+			}
 		}
 	}
 
@@ -464,8 +592,10 @@ func pushOnce(
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
+		pullPayloadCache.ClearIfCurrent(pullGen)
 		return nil, dbsc, fmt.Errorf("marshal envelope: %w", err)
 	}
+	pullPayloadCache.StoreIfCurrent(pullGen, payload)
 	// Fan out: read and filtering above happened once; only sealing and
 	// transport repeat per sink. Each sink is sealed with its own key and
 	// POSTed independently. A per-sink failure (missing key, seal error,

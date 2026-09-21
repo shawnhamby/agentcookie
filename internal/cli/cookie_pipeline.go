@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/agentcookie/internal/cdpsource"
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/chromepaths"
 	"github.com/mvanhorn/agentcookie/internal/config"
@@ -42,6 +44,23 @@ type readStats struct {
 	dbsc         dbscSummary
 }
 
+var readCDPSource = cdpsource.Read
+
+// readConfiguredCookies reads cookies from the configured source without
+// falling back between CDP and SQLite. CDP profiles never invoke browser
+// discovery, Keychain, or SQLite; file-based profiles retain the legacy path.
+func readConfiguredCookies(ctx context.Context, cfg *config.SourceConfig, blocklist *config.Blocklist, key []byte, skipDBSC bool, now time.Time) ([]chrome.Cookie, readStats, error) {
+	if cfg.CDPSource.Enabled {
+		all, err := readCDPSource(ctx, cfg.CDPSource.Endpoint)
+		if err != nil {
+			return nil, readStats{}, fmt.Errorf("read cookies from cdp source: %w", err)
+		}
+		cookies, stats := filterCookies(all, blocklist, skipDBSC, now)
+		return cookies, stats, nil
+	}
+	return readFilteredCookies(cfg.Chrome.DBPath, blocklist, key, skipDBSC, now)
+}
+
 // readFilteredCookies reads every cookie from the browser's Cookies DB,
 // applies the cookie policy, and runs the DBSC classifier -- the shared read
 // pipeline behind both `source` (push to a peer) and `cmux-sync` (local
@@ -57,6 +76,14 @@ func readFilteredCookies(dbPath string, blocklist *config.Blocklist, key []byte,
 	if err != nil {
 		return nil, readStats{}, fmt.Errorf("read cookies: %w", err)
 	}
+	filtered, stats := filterCookies(all, blocklist, skipDBSC, now)
+	return filtered, stats, nil
+}
+
+// filterCookies applies the common policy and DBSC classification to cookie
+// records regardless of whether they came from Chrome SQLite or a live CDP
+// endpoint. The source remains fail-closed when the reader itself fails.
+func filterCookies(all []chrome.Cookie, blocklist *config.Blocklist, skipDBSC bool, now time.Time) ([]chrome.Cookie, readStats) {
 	st := readStats{totalRead: len(all)}
 
 	all, st.droppedHosts = protocol.NewBlocklistMatcher(blocklist).Filter(all)
@@ -71,7 +98,7 @@ func readFilteredCookies(dbPath string, blocklist *config.Blocklist, key []byte,
 		skipped: len(dbscRes.Skipped),
 		sample:  dbscSampleReasons(dbscRes),
 	}
-	return all, st, nil
+	return all, st
 }
 
 // agentSyncSourcePinned reports whether agent-sync should read one cookie store

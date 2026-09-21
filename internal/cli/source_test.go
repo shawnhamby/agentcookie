@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/agentcookie/internal/chrome"
 	"github.com/mvanhorn/agentcookie/internal/config"
 	"github.com/mvanhorn/agentcookie/internal/protocol"
+	"github.com/mvanhorn/agentcookie/internal/secretsbus"
 	"github.com/mvanhorn/agentcookie/internal/state"
 	"github.com/mvanhorn/agentcookie/internal/transport"
 	"github.com/mvanhorn/agentcookie/internal/tsclient"
@@ -104,6 +105,143 @@ domains:
 	}
 	if got := fx.hostsAt(0); !reflect.DeepEqual(got, []string{"example.com", "www.example.com"}) {
 		t.Fatalf("allowlist push hosts = %v", got)
+	}
+}
+
+func TestCDPSourceStatePathIsScopedToConfigDirectory(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "agentcookie-generic")
+	if got, want := sourceStatePath(true, configDir, "/irrelevant"), filepath.Join(configDir, "state", "source-state.json"); got != want {
+		t.Fatalf("CDP source state path = %q, want %q", got, want)
+	}
+	if got, want := sourceStatePathForConfig(&config.SourceConfig{CDPSource: config.CDPSourceRef{Enabled: true}}, configDir, "/irrelevant"), filepath.Join(configDir, "state", "source-state.json"); got != want {
+		t.Fatalf("configured CDP source state path = %q, want %q", got, want)
+	}
+	if got, want := sourceStatePathForConfig(nil, configDir, "/home/test"), state.SourcePath("/home/test"); got != want {
+		t.Fatalf("default source state path = %q, want %q", got, want)
+	}
+}
+
+func TestSourcePushCDPSourceAppliesAllowlistWithoutSQLiteFallback(t *testing.T) {
+	fx := newSourcePushFixture(t, nil)
+	fx.cfg.CDPSource = config.CDPSourceRef{Enabled: true, Endpoint: "http://127.0.0.1:9230"}
+	writeCLIFile(t, filepath.Join(fx.configDir, "blocklist.yaml"), `
+version: 1
+policy: allowlist
+domains:
+  - pattern: "example.com"
+  - pattern: "%.example.com"
+`)
+
+	previous := readCDPSource
+	readCDPSource = func(_ context.Context, endpoint string) ([]chrome.Cookie, error) {
+		if endpoint != "http://127.0.0.1:9230" {
+			t.Fatalf("endpoint = %q", endpoint)
+		}
+		return []chrome.Cookie{
+			{HostKey: "example.com", Name: "apex", Value: "a", Path: "/"},
+			{HostKey: "www.example.com", Name: "sub", Value: "s", Path: "/"},
+			{HostKey: "blocked.com", Name: "blocked", Value: "b", Path: "/"},
+		}, nil
+	}
+	t.Cleanup(func() { readCDPSource = previous })
+	previousSecrets := loadSecretsPayload
+	loadSecretsPayload = func(string) (*secretsbus.Payload, []error) {
+		t.Fatal("CDP source must not read the machine-wide secrets bus")
+		return nil, nil
+	}
+	t.Cleanup(func() { loadSecretsPayload = previousSecrets })
+
+	if _, err := fx.push(); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if got := fx.hostsAt(0); !reflect.DeepEqual(got, []string{"example.com", "www.example.com"}) {
+		t.Fatalf("CDP source pushed hosts = %v", got)
+	}
+	if got := fx.capture.envelopeAt(0).Secrets; len(got) != 0 {
+		t.Fatalf("CDP source transported secrets = %v, want none", got)
+	}
+}
+
+func TestSourcePushEmptyCycleRecordsHealthySourceState(t *testing.T) {
+	fx := newSourcePushFixture(t, nil)
+	statePath := filepath.Join(t.TempDir(), "source-state.json")
+	stateWriter := state.NewWriter(statePath)
+
+	n, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, false, false, false, fx.srcState, stateWriter)
+	if err != nil {
+		t.Fatalf("empty push: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty push count = %d, want 0", n)
+	}
+	if got := fx.batchCount(); got != 0 {
+		t.Fatalf("empty push should not POST, got %d requests", got)
+	}
+	if got := fx.srcState.TotalPushes; got != 1 {
+		t.Errorf("TotalPushes = %d, want 1 after a successful empty cycle", got)
+	}
+	if fx.srcState.LastPush.IsZero() {
+		t.Fatal("LastPush should be recorded after a successful empty cycle")
+	}
+	if got := fx.srcState.LastPushCount; got != 0 {
+		t.Errorf("LastPushCount = %d, want 0", got)
+	}
+	if got := fx.srcState.TotalFailures; got != 0 {
+		t.Errorf("TotalFailures = %d, want 0", got)
+	}
+	persisted, err := state.LoadSource(statePath)
+	if err != nil {
+		t.Fatalf("load persisted source state: %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("successful empty cycle did not persist source health")
+	}
+	if got := persisted.TotalPushes; got != 1 {
+		t.Errorf("persisted TotalPushes = %d, want 1", got)
+	}
+	if persisted.LastPush.IsZero() {
+		t.Error("persisted LastPush should be recorded after a successful empty cycle")
+	}
+	if got := persisted.LastPushCount; got != 0 {
+		t.Errorf("persisted LastPushCount = %d, want 0", got)
+	}
+}
+
+func TestSourcePushDryRunDoesNotRecordSourceHealth(t *testing.T) {
+	fx := newSourcePushFixture(t, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "session", Value: "value", Path: "/"},
+	})
+	statePath := filepath.Join(t.TempDir(), "source-state.json")
+	stateWriter := state.NewWriter(statePath)
+
+	n, err := pushWithFreshBlocklist(context.Background(), fx.cfg, fx.key, true, false, false, fx.srcState, stateWriter)
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("dry-run push count = %d, want 0", n)
+	}
+	if got := fx.batchCount(); got != 0 {
+		t.Fatalf("dry-run should not POST, got %d requests", got)
+	}
+	if got := fx.srcState.TotalPushes; got != 0 {
+		t.Errorf("dry-run TotalPushes = %d, want 0", got)
+	}
+	if !fx.srcState.LastPush.IsZero() {
+		t.Fatal("dry-run should not update LastPush")
+	}
+	persisted, err := state.LoadSource(statePath)
+	if err != nil {
+		t.Fatalf("load dry-run state: %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("dry-run should persist its non-health state envelope")
+	}
+	if got := persisted.TotalPushes; got != 0 {
+		t.Errorf("persisted dry-run TotalPushes = %d, want 0", got)
+	}
+	if !persisted.LastPush.IsZero() {
+		t.Errorf("persisted dry-run should not update LastPush, got %s", persisted.LastPush)
 	}
 }
 
@@ -258,10 +396,11 @@ func (f *sourcePushFixture) hostsAt(i int) []string {
 }
 
 type sourceCapture struct {
-	secret  string
-	mu      sync.Mutex
-	batches [][]chrome.Cookie
-	urls    []string
+	secret    string
+	mu        sync.Mutex
+	batches   [][]chrome.Cookie
+	urls      []string
+	envelopes []protocol.SyncEnvelope
 	// failURL, when non-empty, makes a POST to that exact URL return a
 	// non-200 so tests can exercise per-sink failure isolation.
 	failURL string
@@ -300,6 +439,7 @@ func (c *sourceCapture) RoundTrip(req *http.Request) (*http.Response, error) {
 	c.mu.Lock()
 	c.batches = append(c.batches, append([]chrome.Cookie(nil), envelope.Cookies...))
 	c.urls = append(c.urls, req.URL.String())
+	c.envelopes = append(c.envelopes, envelope)
 	c.mu.Unlock()
 
 	return &http.Response{
@@ -321,6 +461,12 @@ func (c *sourceCapture) batchCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.batches)
+}
+
+func (c *sourceCapture) envelopeAt(i int) protocol.SyncEnvelope {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.envelopes[i]
 }
 
 func (c *sourceCapture) batchAt(i int) []chrome.Cookie {

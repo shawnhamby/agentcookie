@@ -714,7 +714,7 @@ func TestCheckSourceAdapter(t *testing.T) {
 	t.Run("unknown browser lists supported names", func(t *testing.T) {
 		cfg := &config.SourceConfig{
 			Chrome:  config.ChromeRef{DBPath: "/tmp/Cookies"},
-			Browser: config.BrowserRef{Name: "dia"},
+			Browser: config.BrowserRef{Name: "vivaldi"},
 		}
 		c := checkSourceAdapter(cfg, exists, password, decryptOK)
 		if c.Severity != SeverityFail {
@@ -1152,6 +1152,7 @@ func TestCheckDaemonBinaryPath(t *testing.T) {
 	})
 
 	t.Run("no plist files is OK (Linux or fresh install)", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
 		srcCfg := &config.SourceConfig{}
 		sinkCfg := &config.SinkConfig{}
 		c := checkDaemonBinaryPath(srcCfg, sinkCfg)

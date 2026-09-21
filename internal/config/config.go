@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/agentcookie/internal/cdpsource"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,9 +36,13 @@ type SourceConfig struct {
 	// is conflict precedence (name+domain+path). Empty uses
 	// DefaultEnabledProducts. Unlisted products are never discovered or
 	// Keychain-probed.
-	EnabledProducts []string    `yaml:"enabled_products,omitempty" json:"enabled_products,omitempty"`
-	Peer            PeerRef     `yaml:"peer,omitempty" json:"peer,omitempty"`
-	Security        SecurityRef `yaml:"security,omitempty" json:"security,omitempty"`
+	EnabledProducts []string `yaml:"enabled_products,omitempty" json:"enabled_products,omitempty"`
+	// CDPSource reads the cookie jar through an existing loopback-only CDP
+	// endpoint instead of opening the browser's encrypted SQLite database.
+	// It is mutually exclusive with the browser/Chrome source reader at runtime.
+	CDPSource CDPSourceRef `yaml:"cdp_source,omitempty" json:"cdp_source,omitempty"`
+	Peer      PeerRef      `yaml:"peer,omitempty" json:"peer,omitempty"`
+	Security  SecurityRef  `yaml:"security,omitempty" json:"security,omitempty"`
 	// Cmux configures the same-machine local loop: `agentcookie cmux-sync`
 	// reads this machine's Chrome and injects into this machine's cmux
 	// browser. Independent of the sink/peer push path; absent = loop off.
@@ -166,6 +171,13 @@ type ListenRef struct {
 
 type ChromeRef struct {
 	DBPath string `yaml:"db_path" json:"db_path"`
+}
+
+// CDPSourceRef selects a pre-existing browser to read through CDP. The
+// endpoint is restricted to a loopback HTTP origin during config loading.
+type CDPSourceRef struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 }
 
 type BrowserRef struct {
@@ -315,6 +327,15 @@ func LoadSourceLocal(dir string) (*SourceConfig, error) {
 // shared by LoadSource and LoadSourceLocal (everything except the
 // push-only sink/peer/secret validation).
 func resolveSourcePaths(path string, cfg *SourceConfig) error {
+	if cfg.CDPSource.Enabled {
+		if err := cdpsource.ValidateEndpoint(cfg.CDPSource.Endpoint); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if cfg.Chrome.DBPath != "" || cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+			return fmt.Errorf("%s: cdp_source cannot be combined with chrome.db_path or browser configuration", path)
+		}
+		return nil
+	}
 	cfg.Chrome.DBPath = ExpandTilde(cfg.Chrome.DBPath)
 	if _, err := ResolveEnabledProducts(cfg); err != nil {
 		return fmt.Errorf("%s: %w", path, err)

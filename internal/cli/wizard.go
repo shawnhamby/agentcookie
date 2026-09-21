@@ -754,7 +754,7 @@ peer:
 
 // renderSourceYAMLSinks renders a multi-sink source.yaml body, always as an
 // explicit sinks: list (never the legacy scalar sink:/peer:), preserving the
-// loaded config's chrome / browser / security / cmux settings. Written via
+// loaded config's selected source reader / security / cmux settings. Written via
 // template rather than yaml.Marshal on purpose: yaml.v3 does not omit a
 // zero-value legacy Sink struct even with omitempty, so marshaling a
 // sinks-only config would emit a stray empty sink: block.
@@ -767,30 +767,46 @@ func renderSourceYAMLSinks(cfg *config.SourceConfig, sinks []config.SinkTarget) 
 			fmt.Fprintf(&b, "    peer: %s\n", s.Peer)
 		}
 	}
-	dbPath := cfg.Chrome.DBPath
-	if dbPath == "" {
-		dbPath = "~/Library/Application Support/Google/Chrome/Default/Cookies"
-	}
-	b.WriteString("chrome:\n")
-	fmt.Fprintf(&b, "  db_path: %s\n", dbPath)
-	if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
-		b.WriteString("browser:\n")
-		if cfg.Browser.Name != "" {
-			fmt.Fprintf(&b, "  name: %s\n", cfg.Browser.Name)
+	// CDP is mutually exclusive with the on-disk Chrome/browser reader.
+	// Preserve the selected mode without emitting a default SQLite path that
+	// would make the rewritten config invalid at its next load.
+	if cfg.CDPSource.Enabled {
+		b.WriteString("cdp_source:\n  enabled: true\n")
+		if cfg.CDPSource.Endpoint != "" {
+			fmt.Fprintf(&b, "  endpoint: %s\n", cfg.CDPSource.Endpoint)
 		}
-		if cfg.Browser.Profile != "" {
-			fmt.Fprintf(&b, "  profile: %s\n", cfg.Browser.Profile)
+	} else {
+		dbPath := cfg.Chrome.DBPath
+		if dbPath == "" {
+			dbPath = "~/Library/Application Support/Google/Chrome/Default/Cookies"
+		}
+		b.WriteString("chrome:\n")
+		fmt.Fprintf(&b, "  db_path: %s\n", dbPath)
+		if cfg.Browser.Name != "" || cfg.Browser.Profile != "" {
+			b.WriteString("browser:\n")
+			if cfg.Browser.Name != "" {
+				fmt.Fprintf(&b, "  name: %s\n", cfg.Browser.Name)
+			}
+			if cfg.Browser.Profile != "" {
+				fmt.Fprintf(&b, "  profile: %s\n", cfg.Browser.Profile)
+			}
 		}
 	}
 	if cfg.Security.SharedSecret != "" {
 		b.WriteString("security:\n")
 		fmt.Fprintf(&b, "  shared_secret: %s\n", cfg.Security.SharedSecret)
 	}
-	if cfg.Cmux.Enabled {
+	if cfg.Cmux.Enabled || cfg.Cmux.CmuxPath != "" || len(cfg.Cmux.DomainFilter) > 0 {
 		b.WriteString("cmux:\n")
 		fmt.Fprintf(&b, "  enabled: %v\n", cfg.Cmux.Enabled)
 		if cfg.Cmux.CmuxPath != "" {
 			fmt.Fprintf(&b, "  cmux_path: %s\n", cfg.Cmux.CmuxPath)
+		}
+		if len(cfg.Cmux.DomainFilter) > 0 {
+			b.WriteString("  domain_filter:\n")
+			for _, pattern := range cfg.Cmux.DomainFilter {
+				fmt.Fprintf(&b, "    - %q\n", pattern)
+			}
 		}
 	}
 	return b.String()

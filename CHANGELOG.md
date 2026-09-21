@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Universal 2 macOS releases
+
+- `make release` builds one Universal 2 binary (arm64 + x86_64). The darwin archive is `agentcookie_<version>_darwin_universal.tar.gz`, so Intel Macs get the same signed, notarized binary as Apple Silicon.
+- `scripts/install-beta.sh` walks releases newest-first and installs the newest stable asset this Mac can run (a universal build, otherwise the host architecture, including older hyphenated names). A linux-only latest release no longer aborts the macOS install. A GitHub API or download failure is reported as that failure, rather than as a missing macOS asset.
+- The release workflow refuses to upload or publish a tag that has no universal darwin tarball.
+
+### Pull / poll mode for client-only sinks
+
+Sinks that can dial out over Tailscale but cannot accept inbound HTTP (Muse-like client-only shims) can poll the source instead of binding `/sync`.
+
+- `agentcookie source --watch` serves `GET /pull` on the pairing port (Tailscale `100.x:9998` by default; `--pull-listen` overrides). The latest sealed envelope is HMAC-authenticated with the existing peer key.
+- `agentcookie sink --pull-from <source-host> --pull-interval 30s` skips the sync listener and polls that endpoint. Fetched envelopes use the same decrypt → policy → sidecar/CDP path as POST `/sync`, and sequence tracking skips already-applied payloads.
+- The shared HTTP client now sets `Transport.Proxy = http.ProxyFromEnvironment` so outbound polls honor `HTTP_PROXY` (required on sandboxes whose tailnet access is a local proxy).
+
+### Dia source-browser support
+
+Dia (The Browser Company) is a Chromium-family source adapter using the same Safe Storage model as Arc, Brave, and Edge. Set `browser.name: dia` in `source.yaml`. Discovery labels Dia's `User Data` root as `dia` so key lookup uses `Dia Safe Storage` rather than Chrome's.
+
 ### Multi-sink fan-out
 
 One source can now push the same cookies and secrets to several sinks.
