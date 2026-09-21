@@ -4,6 +4,18 @@ Your agent runs on a Linux box (a Grok Bot VM, a cloud agent runtime, a homelab 
 
 Cookie-authenticated sites show the logged-in UI after live CDP inject. Google/Workspace sessions stay logged out unless a human signed in on the box (DBSC binds those sessions to device keys). browserUse, Puppeteer, Playwright, or any Chromium automation that connects to Chrome's debug port sees your non-DBSC sessions already there.
 
+## About this fork
+
+This is a fork of [mvanhorn/agentcookie](https://github.com/mvanhorn/agentcookie). It tracks upstream and carries a few changes suited to a single-machine, macOS-only deployment. They are listed here in case any are useful upstream or to other forks. None of them are upstream's direction, and one deliberately narrows behavior rather than extending it.
+
+- **Multi-product cookie export.** `export` merges every user profile of every enabled browser product into one store instead of reading a single profile. An `enabled_products` list in `source.yaml` names which products participate, and list order sets conflict precedence for `name`+`domain`+`path` collisions. `--browser` still pins to one product and merges that product's profiles.
+- **Narrowed source browser registry.** Only Chrome and Edge are admitted as cookie sources. Other Chromium forks are rejected at config load rather than discovered, keeping profile discovery and Keychain probing to the two products actually in use. This is a scope reduction, so it is the change least likely to suit anyone else.
+- **Watcher follows every enabled store.** Because export merges across products, `agent-sync` watches each enabled store's cookie database rather than one configured path.
+- **Owned-Chrome fidelity and resilience.** The headless Chrome that `agent-sync` owns reports display geometry, device scale, colour depth, and work area, applies a user-gesture autoplay policy with audio muted, and rebuilds its CDP connection with bounded retries when the socket dies without the browser exiting. Cookies a site issues purely as bot-clearance signals are skipped on inject, since replaying them into a different browser is not meaningful.
+- **Sink dry-run redacts by default.** `sink --dry-run` prints cookie metadata (name, domain, path, flags, expiry) rather than values. Plaintext values require an explicit `--dry-run-values`, so inspecting the wire format does not put session tokens into a terminal or a log by accident.
+
+Issues and PRs against this fork are welcome, but upstream is the better home for anything general.
+
 ## What it looks like
 
 You browse normally on your Mac. agentcookie watches Chrome's Cookies file and ships the diff to your Linux sink the moment anything changes. On the Linux box, an agent does its work:
