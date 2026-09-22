@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -270,6 +271,14 @@ func EnabledProfileForBrowser(name string, cfg *SourceConfig) string {
 	return defaultBrowserProfile
 }
 
+// ErrNoSink reports that source.yaml configures no sink. That is fatal for
+// the push path, which has nowhere to deliver, but it is the normal shape of
+// a local-loop install where agent-sync and cmux-sync inject into a browser on
+// this same machine and never push anywhere. Callers that do not push should
+// test for this with errors.Is and fall back to LoadSourceLocal rather than
+// treating it as a broken config.
+var ErrNoSink = errors.New("at least one sink is required")
+
 // LoadSource reads source.yaml from dir.
 func LoadSource(dir string) (*SourceConfig, error) {
 	path := filepath.Join(dir, "source.yaml")
@@ -279,7 +288,7 @@ func LoadSource(dir string) (*SourceConfig, error) {
 	}
 	sinks := cfg.ResolvedSinks()
 	if len(sinks) == 0 {
-		return nil, fmt.Errorf("%s: at least one sink is required (set sink.url, or a sinks: list)", path)
+		return nil, fmt.Errorf("%s: %w (set sink.url, or a sinks: list)", path, ErrNoSink)
 	}
 	for i, s := range sinks {
 		if s.URL == "" {

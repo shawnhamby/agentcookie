@@ -113,7 +113,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			return tsclient.RequireTailnetIP(context.Background())
 		},
 		LoadSourceState: func() (*state.SourceState, error) {
-			cfg, err := config.LoadSource(common.ConfigDir)
+			cfg, _, err := loadSourceConfigTolerant(common.ConfigDir)
 			if err != nil {
 				return nil, err
 			}
@@ -204,9 +204,22 @@ func buildReport(d doctorDeps) DoctorReport {
 
 	// 7. Source state -- source role only.
 	if srcCfg != nil {
-		st, err := d.LoadSourceState()
-		checks = append(checks, checkSourceStateFrom(st, err))
-		checks = append(checks, checkDBSCFrom(st))
+		// Source state records the last push. A local-loop install has no
+		// sink and never pushes, so a missing source-state.json is the
+		// expected steady state there rather than a daemon that has stopped
+		// working. Only the push path can be judged by it.
+		if len(srcCfg.ResolvedSinks()) == 0 {
+			checks = append(checks, Check{
+				Name:     "Source state",
+				Severity: SeveritySkipped,
+				Detail:   "local loop, no sink to push to",
+			})
+			checks = append(checks, checkDBSCFrom(nil))
+		} else {
+			st, err := d.LoadSourceState()
+			checks = append(checks, checkSourceStateFrom(st, err))
+			checks = append(checks, checkDBSCFrom(st))
+		}
 		checks = append(checks, checkSourceAdapter(srcCfg, d.SourceAdapterCookiesExists, d.SourceAdapterPassword, d.SourceAdapterDecrypt))
 	} else {
 		checks = append(checks, Check{
@@ -649,6 +662,32 @@ func checkConfig(configDir string) Check {
 // present on a single-machine local-dev install. Neither = FAIL.
 // Parse errors are surfaced as FAIL with the file path embedded so
 // the user knows which file to look at.
+// loadSourceConfigTolerant loads source.yaml the way the non-push commands do.
+//
+// LoadSource requires a sink because the push path has nowhere to deliver
+// without one. A local-loop install never pushes: agent-sync and cmux-sync
+// read this machine's browsers and inject into a browser on this same machine,
+// which is why they load through LoadSourceLocal. Doctor reports on whatever
+// is installed, so it has to accept both shapes.
+//
+// It returns whether the install is a sink-less local loop so callers can name
+// that shape instead of reporting a failure. Any other load error is returned
+// unchanged; a sink that is present but unusable is still broken.
+func loadSourceConfigTolerant(configDir string) (*config.SourceConfig, bool, error) {
+	cfg, err := config.LoadSource(configDir)
+	if err == nil {
+		return cfg, false, nil
+	}
+	if !errors.Is(err, config.ErrNoSink) {
+		return nil, false, err
+	}
+	local, localErr := config.LoadSourceLocal(configDir)
+	if localErr != nil {
+		return nil, false, localErr
+	}
+	return local, true, nil
+}
+
 func checkConfigLoaded(configDir string) (Check, *config.SourceConfig, *config.SinkConfig) {
 	srcPath := filepath.Join(configDir, "source.yaml")
 	sinkPath := filepath.Join(configDir, "sink.yaml")
@@ -672,10 +711,14 @@ func checkConfigLoaded(configDir string) (Check, *config.SourceConfig, *config.S
 		errs    []string
 	)
 	if srcExists {
-		s, err := config.LoadSource(configDir)
-		if err != nil {
+		s, localLoop, err := loadSourceConfigTolerant(configDir)
+		switch {
+		case err != nil:
 			errs = append(errs, "source.yaml: "+err.Error())
-		} else {
+		case localLoop:
+			srcCfg = s
+			parts = append(parts, "source.yaml (local loop, no sink)")
+		default:
 			srcCfg = s
 			parts = append(parts, "source.yaml")
 		}

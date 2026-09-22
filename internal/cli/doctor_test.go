@@ -133,6 +133,50 @@ peer:
 			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
 		}
 	})
+	// A local-loop install pushes nowhere, so source.yaml names no sink.
+	// agent-sync and cmux-sync accept that shape; doctor must agree, and must
+	// still hand back a parsed source config so the source-side checks below
+	// it do not silently report themselves as a sink-only install.
+	t.Run("source only, local loop with no sink", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "source.yaml"), `enabled_products:
+  - chrome
+  - edge
+browser:
+  name: edge
+  profile: "Profile 2"
+`)
+		c, srcCfg, sinkCfg := checkConfigLoaded(dir)
+		if c.Severity != SeverityOK {
+			t.Fatalf("got %q (%q), want OK", c.Severity, c.Detail)
+		}
+		if srcCfg == nil {
+			t.Fatal("source config is nil; source-side checks would misreport as sink-only")
+		}
+		if sinkCfg != nil {
+			t.Errorf("sink config should be nil for a source-only install, got %+v", sinkCfg)
+		}
+		if !strings.Contains(c.Detail, "local loop") {
+			t.Errorf("detail should name the local-loop shape, got %q", c.Detail)
+		}
+		if got := len(srcCfg.EnabledProducts); got != 2 {
+			t.Errorf("enabled_products not parsed: got %d, want 2", got)
+		}
+	})
+	// A sink-less config is fine; a malformed sink entry is still a failure.
+	t.Run("source with a credential-less sink entry still fails", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "source.yaml"), `sinks:
+  - url: https://100.80.229.80:9999
+`)
+		c, srcCfg, _ := checkConfigLoaded(dir)
+		if c.Severity != SeverityFail {
+			t.Fatalf("got %q (%q), want FAIL", c.Severity, c.Detail)
+		}
+		if srcCfg != nil {
+			t.Errorf("source config should be nil on a real config failure, got %+v", srcCfg)
+		}
+	})
 }
 
 func TestCheckCookiePolicy(t *testing.T) {
@@ -900,6 +944,69 @@ peer:
 		if w, ok := want[c.Name]; ok && c.Severity != w {
 			t.Errorf("%s: got %q, want %q", c.Name, c.Severity, w)
 		}
+	}
+}
+
+// TestDoctorLocalLoopInstallIsGreen covers the sink-less local-loop shape:
+// source.yaml names no sink because nothing is ever pushed. Doctor used to
+// fail such an install outright, which also left the source config nil and
+// silently downgraded every source-side check to "sink-only install". The
+// install is legitimate, so it must report green and still evaluate the
+// source side.
+func TestDoctorLocalLoopInstallIsGreen(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "source.yaml"), `enabled_products:
+  - chrome
+  - edge
+`)
+
+	report := buildReport(doctorDeps{
+		ConfigDir: dir,
+		BinarySignature: func() (string, error) {
+			return "designated => anchor apple generic and certificate leaf[subject.OU] = \"NM8VT393AR\"", nil
+		},
+		TailscaleIP: func() (string, error) { return "100.80.229.80", nil },
+		LoadSourceState: func() (*state.SourceState, error) {
+			t.Error("source state must not be read on a local-loop install; it never pushes")
+			return nil, nil
+		},
+		LoadSinkState:              func() (*state.SinkState, error) { return nil, nil },
+		MasterKeyExists:            func() bool { return false },
+		SourceAdapterCookiesExists: func(string) error { return nil },
+		SourceAdapterPassword:      func(chrome.Browser) (string, error) { return "safe-storage-password", nil },
+		SourceAdapterDecrypt:       func(string, []byte) error { return nil },
+		CmuxSessionHealth: func(config.CmuxRef) Check {
+			return Check{Name: "cmux session health", Severity: SeveritySkipped, Detail: "stub"}
+		},
+	})
+
+	for _, c := range report.Checks {
+		if c.Severity == SeverityFail {
+			t.Errorf("local-loop install should not FAIL: %s: %s", c.Name, c.Detail)
+		}
+	}
+
+	want := map[string]Severity{
+		"Config":         SeverityOK,
+		"Source state":   SeveritySkipped,
+		"Source adapter": SeverityOK,
+	}
+	got := map[string]Check{}
+	for _, c := range report.Checks {
+		got[c.Name] = c
+	}
+	for name, sev := range want {
+		c, ok := got[name]
+		if !ok {
+			t.Errorf("%s check missing from report", name)
+			continue
+		}
+		if c.Severity != sev {
+			t.Errorf("%s: got %q (%q), want %q", name, c.Severity, c.Detail, sev)
+		}
+	}
+	if d := got["Config"].Detail; !strings.Contains(d, "local loop") {
+		t.Errorf("Config detail should name the local-loop shape, got %q", d)
 	}
 }
 
