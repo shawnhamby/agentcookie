@@ -38,8 +38,29 @@ designated => identifier "com.mvanhorn.agentcookie" and anchor apple generic and
 			wantSubs: "NM8VT393AR",
 		},
 		{
-			name:     "ad-hoc signed",
-			output:   `Executable=/usr/local/bin/agentcookie\ndesignated => anchor apple generic and certificate leaf[subject.OU] = "OTHER"`,
+			// A fork signed with its own Developer ID is properly signed.
+			// Calling that ad-hoc trained the reader to ignore the one check
+			// that catches a re-sign under the wrong identity, which is what
+			// the Chrome Safe Storage Keychain ACL is bound to.
+			name: "developer id signed by another team",
+			output: `Executable=/usr/local/bin/agentcookie
+designated => identifier agentcookie and anchor apple generic and certificate leaf[subject.OU] = "7AWXJX88RL"`,
+			wantSev:  SeverityOK,
+			wantSubs: "7AWXJX88RL",
+		},
+		{
+			name: "ad-hoc signed",
+			output: `Executable=/usr/local/bin/agentcookie
+designated => cdhash H"0123456789abcdef0123456789abcdef01234567"`,
+			wantSev:  SeverityWarn,
+			wantSubs: "ad-hoc",
+		},
+		{
+			// An Apple anchor with no leaf Team ID is not a Developer ID
+			// signature, so both parts are required.
+			name: "apple anchor without a team id",
+			output: `Executable=/usr/local/bin/agentcookie
+designated => anchor apple generic`,
 			wantSev:  SeverityWarn,
 			wantSubs: "ad-hoc",
 		},

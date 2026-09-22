@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -580,12 +581,27 @@ func extractLaunchAgentBinaryPath(spec launchd.Spec) string {
 
 // --- individual checks ---
 
+// developerIDTeam pulls the Team ID out of a designated requirement. It is
+// paired with an Apple-anchor check at the call site: an Apple anchor with no
+// leaf Team ID is not a Developer ID signature, and a Team ID string on its
+// own could have come from anywhere in the output.
+var developerIDTeam = regexp.MustCompile(`certificate leaf\[subject\.OU\]\s*=\s*"([A-Z0-9]+)"`)
+
 // checkBinarySignatureWith parses the output of `codesign -d -r-`. The
 // production caller passes probeBinarySignature; tests inject a string.
-// Severity is OK when the designated requirement names Team ID
-// NM8VT393AR; WARN otherwise (ad-hoc local build or no codesign). The
-// check never FAILs because a friend running a freshly-built dev binary
-// should not be blocked.
+//
+// Severity is OK for any Developer ID signature, and the detail names the
+// Team ID actually found. It deliberately does not compare against a single
+// hardcoded team. A fork signed with its own Developer ID is properly signed,
+// and calling that "ad-hoc signed (local build)" was both wrong and actively
+// misleading here, because the Chrome Safe Storage Keychain ACL is bound to
+// whichever identity signed the binary. Reporting a correctly signed fork
+// build as unsigned trains the reader to ignore the one check that would
+// catch a re-sign under the wrong identity.
+//
+// WARN covers what is genuinely unsigned or unverifiable: an ad-hoc
+// signature, no signature, or no codesign to ask. The check never FAILs
+// because a freshly built dev binary should not be blocked.
 func checkBinarySignatureWith(probe func() (string, error)) Check {
 	out, err := probe()
 	if err != nil {
@@ -596,17 +612,17 @@ func checkBinarySignatureWith(probe func() (string, error)) Check {
 			Remediation: "install Xcode command-line tools if you want signature verification; signing overrides use DEFAULT_SIGN_IDENTITY",
 		}
 	}
-	if strings.Contains(out, "NM8VT393AR") {
+	if m := developerIDTeam.FindStringSubmatch(out); m != nil && strings.Contains(out, "anchor apple generic") {
 		return Check{
 			Name:     "Binary signature",
 			Severity: SeverityOK,
-			Detail:   "Developer ID Application (NM8VT393AR)",
+			Detail:   "Developer ID Application (" + m[1] + ")",
 		}
 	}
 	return Check{
 		Name:        "Binary signature",
 		Severity:    SeverityWarn,
-		Detail:      "ad-hoc signed (local build); not a release binary",
+		Detail:      "ad-hoc signed or unsigned local build; not Developer ID signed",
 		Remediation: "fine for development; signing overrides use DEFAULT_SIGN_IDENTITY, or install the notarized release binary",
 	}
 }

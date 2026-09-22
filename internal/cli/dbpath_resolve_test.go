@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/mvanhorn/agentcookie/internal/config"
@@ -85,7 +84,13 @@ func TestResolveSourceDBPath_EmptyConfigBrowserSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSourceDBPath: %v", err)
 	}
-	if !strings.Contains(got, "Microsoft Edge") {
-		t.Fatalf("expected Edge store path, got %q", got)
+	// Compare against the derived path rather than a literal directory name.
+	// The macOS support dir is "Microsoft Edge" but Linux maps it to
+	// "microsoft-edge", so asserting the macOS spelling made this impossible
+	// to pass on Linux while testing nothing extra. The point of the case is
+	// that a browser switch re-derives an Edge store at all.
+	want := mustDerive(t, "edge", "Default")
+	if got != want {
+		t.Fatalf("expected Edge store path %q, got %q", want, got)
 	}
 }
