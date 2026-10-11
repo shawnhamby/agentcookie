@@ -365,10 +365,6 @@ func buildReport(d doctorDeps) DoctorReport {
 	// 15. Chrome stores -- lists discovered Chrome profile stores and
 	// skip reasons. Informational (INFO/OK), never FAIL.
 	// Include config's CDP.ProfileDir if set.
-	cdpProfileDir := ""
-	if sinkCfg != nil {
-		cdpProfileDir = sinkCfg.CDP.ProfileDir
-	}
 	// Discovery scans enabled products' user profiles only.
 	enabledProducts := chromepaths.DefaultEnabledProducts
 	if srcCfg != nil {
@@ -376,7 +372,7 @@ func buildReport(d doctorDeps) DoctorReport {
 			enabledProducts = products
 		}
 	}
-	checks = append(checks, checkChromeStores(cdpProfileDir, enabledProducts))
+	checks = append(checks, checkChromeStores(sinkCfg, enabledProducts))
 
 	exit := 0
 	for _, c := range checks {
@@ -1661,20 +1657,25 @@ func checkCookieDeliveryWith(sinkCfg *config.SinkConfig, probe func() (int, erro
 // Default profile, including agent Chromes that have Cookies but no Local
 // State. Never FAIL; OK when stores found, INFO when stores skipped or on
 // Linux (no decrypt), SKIPPED when no Chrome detected.
-// profileDir is passed to DiscoverForSource to include a configured CDP profile.
+// sinkCfg (nil on a source-only box) supplies the configured CDP profile
+// dir, which is passed to DiscoverForSource, and skip_chrome_sqlite.
 // Discovery and Keychain probes touch enabled products' user profiles only.
 // Guest and System profiles are never stores.
 
-func checkChromeStores(profileDir string, enabledProducts []string) Check {
-	return checkChromeStoresWith(profileDir, enabledProducts, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)
+func checkChromeStores(sinkCfg *config.SinkConfig, enabledProducts []string) Check {
+	return checkChromeStoresWith(sinkCfg, enabledProducts, chrome.LookupBrowser, chrome.SafeStoragePasswordFor)
 }
 
 func checkChromeStoresWith(
-	profileDir string,
+	sinkCfg *config.SinkConfig,
 	enabledProducts []string,
 	lookupBrowser func(string) (chrome.Browser, error),
 	passwordFor func(chrome.Browser) (string, error),
 ) Check {
+	profileDir := ""
+	if sinkCfg != nil {
+		profileDir = sinkCfg.CDP.ProfileDir
+	}
 	result := chromepaths.DiscoverForSourceWithProducts(profileDir, "", enabledProducts)
 
 	if len(result.Stores) == 0 && len(result.Skipped) == 0 {
@@ -1709,6 +1710,31 @@ func checkChromeStoresWith(
 			Name:     "Chrome stores",
 			Severity: SeverityInfo,
 			Detail:   detail,
+		}
+	}
+
+	// skip_chrome_sqlite: list the stores but never read Safe Storage
+	// (#137), so readability is not checked.
+	if !safeStorageReadAllowed(sinkCfg) {
+		labels := make([]string, 0, len(result.Stores))
+		for _, s := range result.Stores {
+			label := s.Browser + "/" + s.Profile
+			if s.IsDefault {
+				label += " (default)"
+			}
+			labels = append(labels, label)
+		}
+		if len(labels) > 5 {
+			labels = append(labels[:5], fmt.Sprintf("+%d more", len(result.Stores)-5))
+		}
+		detail := fmt.Sprintf("%d store(s) found", len(result.Stores))
+		if len(labels) > 0 {
+			detail += ": " + strings.Join(labels, ", ")
+		}
+		return Check{
+			Name:     "Chrome stores",
+			Severity: SeverityInfo,
+			Detail:   detail + "; readability not checked because skip_chrome_sqlite is set (agentcookie never reads Chrome Safe Storage in this mode)",
 		}
 	}
 
