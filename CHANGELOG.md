@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Keychain: --recreate keeps existing Chrome cookies readable
+
+- `agentcookie wizard set-keychain-access --recreate` deleted Chrome Safe Storage and re-added it with a random value, so every existing Chrome cookie on that Mac became unreadable. The same step also ran after `--any-app`'s guard refused to touch an unreadable item, which bypassed that guard. The step now recreates an existing item with its own value, refuses to delete an item whose value it cannot read, and uses a fresh value only when no item exists yet.
+
 ### Bounded Chrome quit
 
 - chromectl bounds the AppleScript quit with its own short timeout. A not-authorized (-1743) result or an unanswered Automation prompt falls back to SIGTERM right away, and later quits in the same process skip AppleScript, so a sink sync never waits on a prompt nobody answers.
