@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Bounded Chrome quit
+
+- chromectl bounds the AppleScript quit with its own short timeout. A not-authorized (-1743) result or an unanswered Automation prompt falls back to SIGTERM right away, and later quits in the same process skip AppleScript, so a sink sync never waits on a prompt nobody answers.
+
 ### Sink: no Chrome Safe Storage reads under skip_chrome_sqlite
 
 - A sink with `skip_chrome_sqlite: true` read Chrome Safe Storage on every batch to union extra Chrome profiles for adapters, so a headless sink showed a Keychain dialog per sync. Under `skip_chrome_sqlite`, nothing reads Chrome Safe Storage now: not the sink daemon, `agentcookie cookies --domain`, or doctor's Chrome stores check, which lists the stores as INFO without checking readability.
