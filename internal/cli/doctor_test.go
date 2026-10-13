@@ -849,7 +849,7 @@ func TestCheckChromeStores_OnlyEnabledSources(t *testing.T) {
 		}
 	}
 
-	c := checkChromeStoresWith("", nil, lookup, passwordFor)
+	c := checkChromeStoresWith(nil, nil, lookup, passwordFor)
 	detail := strings.ToLower(c.Detail)
 	for _, notEnabled := range []string{"brave", "guest", "system profile", "arc", "chromium"} {
 		if strings.Contains(detail, notEnabled) {
@@ -875,6 +875,19 @@ func TestHostMatchesAnyAdapter(t *testing.T) {
 	}
 	if hostMatchesAnyAdapter(".example.com", adapters) {
 		t.Errorf("did not expect match for .example.com")
+	}
+	// Look-alike hosts must not count as covered. The old substring
+	// approximation matched these.
+	domainAdapters := []sinkpush.Adapter{&stubAdapter{patterns: sinkpush.DomainHostPatterns("ebay.com")}}
+	for _, h := range []string{"ebay.com", ".ebay.com", "www.ebay.com"} {
+		if !hostMatchesAnyAdapter(h, domainAdapters) {
+			t.Errorf("expected match for %s", h)
+		}
+	}
+	for _, h := range []string{"webay.com", "ebay.evil.com", "ebay.com.attacker.net"} {
+		if hostMatchesAnyAdapter(h, domainAdapters) {
+			t.Errorf("did not expect match for look-alike %s", h)
+		}
 	}
 	// Empty pattern shouldn't crash; treated as non-matching.
 	emptyAdapter := []sinkpush.Adapter{&stubAdapter{patterns: []string{"%"}}}
@@ -1291,4 +1304,32 @@ func TestCheckDaemonBinaryPath(t *testing.T) {
 			t.Fatalf("got %q, want OK (no plist files)", c.Severity)
 		}
 	})
+}
+
+// TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading covers #137 for
+// doctor: under skip_chrome_sqlite the Chrome stores check still lists the
+// discovered stores, reports INFO, and never reads Chrome Safe Storage.
+func TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading(t *testing.T) {
+	skipUnlessDarwin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedExtraChromeProfile(t, home, []chrome.Cookie{
+		{HostKey: ".example.com", Name: "extra", Value: "v", Path: "/"},
+	})
+	reads := 0
+	passwordFor := func(chrome.Browser) (string, error) {
+		reads++
+		return "mock-password", nil
+	}
+
+	c := checkChromeStoresWith(&config.SinkConfig{SkipChromeSQLite: true}, nil, chrome.LookupBrowser, passwordFor)
+	if reads != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", reads)
+	}
+	if c.Severity != SeverityInfo {
+		t.Errorf("severity = %q, want INFO (detail %q)", c.Severity, c.Detail)
+	}
+	if !strings.Contains(c.Detail, "chrome/Default") || !strings.Contains(c.Detail, "skip_chrome_sqlite") {
+		t.Errorf("detail should list the store and name skip_chrome_sqlite; got %q", c.Detail)
+	}
 }

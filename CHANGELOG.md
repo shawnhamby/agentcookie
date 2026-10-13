@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Keychain: --recreate keeps existing Chrome cookies readable
+
+- `agentcookie wizard set-keychain-access --recreate` deleted Chrome Safe Storage and re-added it with a random value, so every existing Chrome cookie on that Mac became unreadable. The same step also ran after `--any-app`'s guard refused to touch an unreadable item, which bypassed that guard. The step now recreates an existing item with its own value, refuses to delete an item whose value it cannot read, and uses a fresh value only when no item exists yet.
+
+### Bounded Chrome quit
+
+- chromectl bounds the AppleScript quit with its own short timeout. A not-authorized (-1743) result or an unanswered Automation prompt falls back to SIGTERM right away, and later quits in the same process skip AppleScript, so a sink sync never waits on a prompt nobody answers.
+
+### Sink: no Chrome Safe Storage reads under skip_chrome_sqlite
+
+- A sink with `skip_chrome_sqlite: true` read Chrome Safe Storage on every batch to union extra Chrome profiles for adapters, so a headless sink showed a Keychain dialog per sync. Under `skip_chrome_sqlite`, nothing reads Chrome Safe Storage now: not the sink daemon, `agentcookie cookies --domain`, or doctor's Chrome stores check, which lists the stores as INFO without checking readability.
+- With `skip_chrome_sqlite` off, the sink reads extra Chrome profiles only when at least one push adapter's CLI is installed. Installed adapters still receive the extra-profile cookies as in v0.15.
+- A permanent Keychain refusal (no grant or timeout) is cached per browser for the life of the process and logged once; restart the sink to retry after granting access. A locked keychain is still retried on the next batch. Reported by @ericxyz86 (#137).
+
+### Security: adapter cookie patterns bound to the real domain
+
+- Sink adapters (airbnb, ebay, pagliacci, instacart, table-reservation) selected cookies with substring patterns such as `%ebay%`, which also matched look-alike hosts like `webay.com` or `ebay.attacker.com`. Those cookies were merged into the Cookie header sent to the real site (CWE-200, CWE-384). Adapters now match only the exact domain or its subdomains via `DomainHostPatterns`, and `doctor` uses the same matcher (#136).
+
 ### Universal 2 macOS releases
 
 - `make release` builds one Universal 2 binary (arm64 + x86_64). The darwin archive is `agentcookie_<version>_darwin_universal.tar.gz`, so Intel Macs get the same signed, notarized binary as Apple Silicon.
