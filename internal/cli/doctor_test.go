@@ -1316,11 +1316,15 @@ func TestCheckChromeStores_SkipChromeSQLiteListsWithoutReading(t *testing.T) {
 	seedExtraChromeProfile(t, home, []chrome.Cookie{
 		{HostKey: ".example.com", Name: "extra", Value: "v", Path: "/"},
 	})
-	stub := stubChromeDecryptKey(t, func(int) ([]byte, error) { return safeStorageTestKey, nil })
+	reads := 0
+	passwordFor := func(chrome.Browser) (string, error) {
+		reads++
+		return "mock-password", nil
+	}
 
-	c := checkChromeStores(&config.SinkConfig{SkipChromeSQLite: true}, nil)
-	if n := stub.count(); n != 0 {
-		t.Errorf("Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", n)
+	c := checkChromeStoresWith(&config.SinkConfig{SkipChromeSQLite: true}, nil, chrome.LookupBrowser, passwordFor)
+	if reads != 0 {
+		t.Errorf("Chrome Safe Storage read %d time(s) under skip_chrome_sqlite; want 0", reads)
 	}
 	if c.Severity != SeverityInfo {
 		t.Errorf("severity = %q, want INFO (detail %q)", c.Severity, c.Detail)

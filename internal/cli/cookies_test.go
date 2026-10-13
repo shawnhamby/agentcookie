@@ -460,10 +460,14 @@ func TestCollectDomainCookiesUnion_SkipChromeSQLiteNeverReadsSafeStorage(t *test
 	t.Setenv("HOME", home)
 	configDir := t.TempDir()
 	withConfigDir(t, configDir)
+	// cdp.profile_dir opts into the Chrome read, so only skip_chrome_sqlite
+	// stands between this call and Safe Storage.
 	writeFile(t, filepath.Join(configDir, "sink.yaml"), `listen:
   addr: 100.80.229.80:9999
 peer:
   hostname: macbook-pro
+cdp:
+  profile_dir: `+filepath.Join(home, "Library", "Application Support", "Google", "Chrome")+`
 skip_chrome_sqlite: true
 `)
 	seedExtraChromeProfile(t, home, []chrome.Cookie{
